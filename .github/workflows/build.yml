@@ -1,0 +1,46 @@
+name: NeuroWatch V2 build (UNVERIFIED OTA candidate)
+on:
+  push:
+    paths:
+      - 'firmware/**'
+      - 'scripts/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preflight test suite
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Install locked board core and libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          INDEX=https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index --additional-urls "$INDEX"
+          arduino-cli core install esp32:esp32@2.0.15 --additional-urls "$INDEX"
+          arduino-cli lib install 'Watchy@1.4.7'
+          arduino-cli lib install 'WiFiManager@2.0.17'
+          arduino-cli board details -b 'esp32:esp32:watchy'
+      - name: Build watch-only application image
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build release
+          arduino-cli compile --fqbn 'esp32:esp32:watchy:Revision=v20,PartitionScheme=min_spiffs' --build-path "$PWD/build" firmware/NeuroWatch_OS
+          IMAGE=build/NeuroWatch_OS.ino.bin
+          test -s "$IMAGE"
+          python3 scripts/check_ota.py "$IMAGE"
+          cp "$IMAGE" release/NeuroWatch-OS-v0.3-Watchy-V2-UNVERIFIED-APP.bin
+          sha256sum release/*.bin > release/SHA256SUMS.txt
+          printf '%s\n' 'NOT HARDWARE TESTED. DO NOT FLASH UNTIL FACTORY PARTITIONS AND USB RECOVERY ARE VERIFIED.' > release/READ_BEFORE_FLASHING.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeuroWatch-V2-UNVERIFIED-OTA-CANDIDATE
+          path: release/
+          if-no-files-found: error
