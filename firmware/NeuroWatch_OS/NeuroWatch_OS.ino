@@ -25,6 +25,7 @@ watchySettings nwSettings{
 
 extern bool alreadyInMenu; // RTC retained menu flag from Watchy
 RTC_DATA_ATTR uint8_t retainedFace = 255;
+RTC_DATA_ATTR uint8_t menuPartialRefreshes = 0;
 
 class NeuroWatch : public Watchy {
  public:
@@ -59,17 +60,20 @@ class NeuroWatch : public Watchy {
         showWatchFace(false);
       } else if (pressed & UP_BTN_MASK) {
         menuIndex = (menuIndex + 4) % 5;
-        showNeuroMenu();
+        showNeuroMenu(true);
       } else if (pressed & DOWN_BTN_MASK) {
         menuIndex = (menuIndex + 1) % 5;
-        showNeuroMenu();
+        showNeuroMenu(true);
       } else if (pressed & MENU_BTN_MASK) {
         if (menuIndex <= 2) {
+          const uint8_t previous = retainedFace;
           setFace((uint8_t)menuIndex);
-          Preferences prefs;
-          if (prefs.begin("nw-os", false)) {
-            prefs.putUChar("face", retainedFace);
-            prefs.end();
+          if (previous != retainedFace) {
+            Preferences prefs;
+            if (prefs.begin("nw-os", false)) {
+              prefs.putUChar("face", retainedFace);
+              prefs.end();
+            }
           }
           RTC.read(currentTime);
           showWatchFace(false);
@@ -100,7 +104,7 @@ class NeuroWatch : public Watchy {
   }
 
  private:
-  void showNeuroMenu() {
+  void showNeuroMenu(bool requestPartial = false) {
     static const char *const items[5] = {
         "TERMINAL", "MINIMAL", "DIAGNOSTICS", "SET CLOCK", "WIFI UPDATE"};
     display.setFullWindow();
@@ -116,7 +120,11 @@ class NeuroWatch : public Watchy {
       label(8, 36 + i * 27, items[i]);
     }
     display.setTextColor(GxEPD_BLACK);
-    display.display(false);
+    // Fast partial update during navigation; full refresh every seventh step
+    // to limit E-Paper ghosting and avoid a slow full refresh on every key.
+    const bool partial = requestPartial && menuPartialRefreshes < 6;
+    menuPartialRefreshes = partial ? menuPartialRefreshes + 1 : 0;
+    display.display(partial);
     guiState = MAIN_MENU_STATE;
     alreadyInMenu = false;
   }
@@ -148,7 +156,7 @@ class NeuroWatch : public Watchy {
     } else {
       textRow(99, "[ SYS MONITOR ]");
 #if NW_SHOW_VOLTAGE
-      snprintf(buf, sizeof(buf), "BAT: %.2f V", getBatteryVoltage());
+      batteryRow(buf, sizeof(buf), 117);
       textRow(117, buf);
 #endif
 #if NW_SHOW_HEAP
@@ -168,16 +176,28 @@ class NeuroWatch : public Watchy {
     snprintf(buf, sizeof(buf), "RTC : %02u:%02u",
              (unsigned)currentTime.Hour, (unsigned)currentTime.Minute);
     textRow(49, buf);
-    snprintf(buf, sizeof(buf), "BAT : %.2f V", getBatteryVoltage());
-    textRow(67, buf);
+    batteryRow(buf, sizeof(buf), 67);
     snprintf(buf, sizeof(buf), "HEAP: %lu B",
              (unsigned long)esp_get_free_heap_size());
     textRow(85, buf);
     snprintf(buf, sizeof(buf), "FLASH: %lu MB",
              (unsigned long)(ESP.getFlashChipSize() / (1024UL * 1024UL)));
     textRow(103, buf);
-    textRow(121, safeOtaPartition() ? "OTA SLOT: AVAILABLE" : "OTA SLOT: MISSING");
+    textRow(121, safeOtaPartition() ? "OTA: SLOT DETECTED" : "OTA: NO DUAL SLOT");
     textRow(139, "RADIO: OFF AT REST");
+  }
+
+  // Printing floating-point values each minute adds code and CPU work.
+  // Convert once to centivolts, then use integer-only formatting.
+  void batteryRow(char *buf, size_t bufSize, int y) {
+    const float voltage = getBatteryVoltage();
+    if (!(voltage >= 0.0f && voltage <= 6.0f)) {
+      textRow(y, "BAT: SENSOR ERROR");
+      return;
+    }
+    const unsigned centivolts = (unsigned)(voltage * 100.0f + 0.5f);
+    snprintf(buf, bufSize, "BAT: %u.%02u V", centivolts / 100, centivolts % 100);
+    textRow(y, buf);
   }
 
   const esp_partition_t *safeOtaPartition() {
@@ -187,16 +207,22 @@ class NeuroWatch : public Watchy {
         ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, nullptr);
     const esp_partition_t *b = esp_partition_find_first(
         ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, nullptr);
+    const esp_partition_t *otadata = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, nullptr);
     const esp_partition_t *next = esp_ota_get_next_update_partition(nullptr);
     const esp_partition_t *running = esp_ota_get_running_partition();
-    if (!a || !b || !next || !running) return nullptr;
+    if (!a || !b || !otadata || otadata->size < 0x2000 ||
+        !next || !running) return nullptr;
+    if (otadata->address >= physical ||
+        otadata->size > physical - otadata->address) return nullptr;
     if (a->address >= physical || b->address >= physical ||
-        a->size < 1024UL * 1024UL || b->size < 1024UL * 1024UL ||
+        a->size < NW_MIN_OTA_SLOT_BYTES || b->size < NW_MIN_OTA_SLOT_BYTES ||
         a->size > physical - a->address ||
         b->size > physical - b->address) return nullptr;
     if (a->address < b->address + b->size &&
         b->address < a->address + a->size) return nullptr;
-    if ((next->address != a->address && next->address != b->address) ||
+    if ((running->address != a->address && running->address != b->address) ||
+        (next->address != a->address && next->address != b->address) ||
         next->address == running->address) return nullptr;
     return next;
   }
