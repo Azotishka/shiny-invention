@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>NeuroWatch — проверка разделов без записи</title>
+<style>
+:root{color-scheme:dark;font:15px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#0b1315;color:#dfefec}
+*{box-sizing:border-box}body{max-width:760px;margin:0 auto;padding:24px 16px 56px}
+a{color:#98f3bd}h1{font-size:1.55rem;line-height:1.2}h2{font-size:1.07rem}
+.panel{border:1px solid #3c6154;border-radius:16px;padding:16px;margin:18px 0;background:#172321}
+.muted{color:#abc3b8}.warning{border-left:4px solid #ffd27c;padding:10px 12px;background:#352d1c}
+strong{color:#fff}label{display:block;font-weight:bold;margin:14px 0 7px}
+input[type=file]{width:100%;border:1px dashed #8fae9e;border-radius:12px;padding:16px;max-width:100%;font:inherit;color:inherit}
+button{padding:14px;border:1px solid #88ecb1;border-radius:10px;background:#a7f0c5;color:#092619;font:inherit;font-weight:bold;width:100%;margin:16px 0}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid #fff}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#0b1315;border:1px solid #345247;padding:12px;border-radius:12px}
+small{color:#bdd3c5}
+</style>
+</head>
+<body>
+<a href="index.html">← NeuroWatch Studio</a>
+<h1>Проверка прошивки без записи</h1>
+<p>Загрузи здесь <strong>только локальную копию Flash</strong> часов, созданную через USB, и файл приложения <code>.bin</code>. Данные обрабатываются браузером на этом устройстве: здесь нет отправки файлов, сервера, сетевого запроса или записи на часы.</p>
+<p class="warning"><strong>Это не установщик.</strong> Результат не проверяет загрузчик, текущий выбранный OTA-слот, аппаратную работу часов или восстановление после сбоя. Если резервной копии ещё нет, сначала получи её с помощью ПК; скриншоты WiFiManager не заменяют дамп.</p>
+<section class="panel">
+<h2>1. Разметка заводской Flash</h2>
+<label for="dump">Полный дамп 4 МБ или только таблица 4096 байт с адреса 0x8000</label>
+<input id="dump" type="file" accept=".bin,.img,.dat,application/octet-stream">
+<small>Полный дамп может содержать сохранённые Wi-Fi-пароли и личные данные. Не публикуй его в GitHub и не отправляй по почте.</small>
+<label for="image">2. Собранное приложение NeuroWatch (.bin), необязательно</label>
+<input id="image" type="file" accept=".bin,application/octet-stream">
+<button id="check" type="button">Проверить только локально</button>
+<pre id="result" role="status" aria-live="polite">Ожидаю выбора файлов. На часы ничего не загружается.</pre>
+</section>
+<section class="panel"><h2>Что означают результаты?</h2><p><strong>Нет двух OTA-разделов:</strong> Wi-Fi-установка этой app-only сборки несовместима с разметкой. <strong>Структура подходит:</strong> только объём и размещение выглядят совместимыми; до первой записи всё равно нужна USB-возможность восстановления и аппаратная проверка. Форма Upload New Firmware на часах сама по себе ничего не доказывает.</p></section>
+<script>
+"use strict";
+const FLASH=4*1024*1024, TABLE_OFFSET=0x8000, TABLE_SIZE=4096, MAX_SLOT=0x1e0000;
+const el=id=>document.getElementById(id);
+const hex=n=>"0x"+n.toString(16).padStart(6,"0");
+function parse(raw){
+ let table;
+ if(raw.byteLength===FLASH)table=raw.slice(TABLE_OFFSET,TABLE_OFFSET+TABLE_SIZE);
+ else if(raw.byteLength===TABLE_SIZE)table=raw;
+ else throw Error("Нужен полный дамп ровно 4 194 304 байта или таблица ровно 4096 байт.");
+ const v=new DataView(table), parts=[];
+ for(let i=0;i+32<=TABLE_SIZE;i+=32){
+  const magic=v.getUint16(i,true);
+  if(magic===0xffff||magic===0xebeb)break;
+  if(magic!==0x50aa)throw Error("Неверная сигнатура записи раздела по смещению "+hex(i)+".");
+  const type=v.getUint8(i+2), subtype=v.getUint8(i+3);
+  const offset=v.getUint32(i+4,true), size=v.getUint32(i+8,true);
+  if(!size||offset<0x9000||offset>=FLASH||size>FLASH-offset)throw Error("Раздел выходит за пределы Flash: "+hex(offset));
+  let label="";
+  for(let j=0;j<16;j++){const n=v.getUint8(i+12+j);if(!n)break;label+=n>=32&&n<127?String.fromCharCode(n):"?";}
+  parts.push({type,subtype,offset,size,label});
+ }
+ if(!parts.length)throw Error("В таблице не обнаружено ни одного раздела.");
+ const sorted=[...parts].sort((a,b)=>a.offset-b.offset);
+ for(let i=1;i<sorted.length;i++)if(sorted[i-1].offset+sorted[i-1].size>sorted[i].offset)
+  throw Error("Разделы пересекаются: "+sorted[i-1].label+" / "+sorted[i].label);
+ return parts;
+}
+function appHeader(raw){
+ if(raw.byteLength<65536||raw.byteLength>MAX_SLOT)throw Error("Неверный размер app-образа: "+raw.byteLength+" байт.");
+ const view=new DataView(raw);
+ if(view.getUint8(0)!==0xe9||view.getUint8(1)<1||view.getUint8(1)>16)throw Error("Файл приложения не похож на ESP32 app-образ.");
+ let off=24, count=view.getUint8(1);
+ for(let n=0;n<count;n++){
+  if(off+8>raw.byteLength)throw Error("Обрезан заголовок сегмента "+n);
+  const len=view.getUint32(off+4,true);off+=8;
+  if(!len||len>raw.byteLength-off)throw Error("Некорректная длина сегмента "+n);
+  off+=len;
+ }
+ if(off>=raw.byteLength)throw Error("Нет заключительных данных образа.");
+ return raw.byteLength;
+}
+function one(parts,type,subtype){const a=parts.filter(p=>p.type===type&&p.subtype===subtype);return a.length===1?a[0]:null;}
+function assess(parts,size){
+ const a=one(parts,0,0x10),b=one(parts,0,0x11),meta=one(parts,1,0);
+ return !!(a&&b&&meta&&meta.size>=0x2000&&a.size>=size&&b.size>=size);
+}
+el("check").addEventListener("click",async()=>{
+ const out=el("result"),d=el("dump").files[0],f=el("image").files[0];
+ if(!d){out.textContent="Сначала выбери резервную копию Flash или таблицу разделов. Без неё делать вывод нельзя.";return;}
+ out.textContent="Локально читаю файлы…";
+ try{
+  if(d.size!==FLASH&&d.size!==TABLE_SIZE)throw Error("Размер дампа отличается от полного 4 МБ или таблицы 4096 байт.");
+  const parts=parse(await d.arrayBuffer());
+  const len=f?appHeader(await f.arrayBuffer()):MAX_SLOT;
+  const lines=["Найденные разделы:"];
+  for(const p of parts)lines.push(p.label+" | тип "+p.type+" / "+hex(p.subtype)+" | "+hex(p.offset)+" | "+p.size+" байт");
+  lines.push("","Файл приложения: "+(f?len+" байт, предварительно проверен заголовок":"не выбран; проверяется минимальный OTA-слот "+MAX_SLOT+" байт"),
+   "СТРУКТУРНЫЙ РЕЗУЛЬТАТ: "+(assess(parts,len)?"ДВА OTA-СЛОТА НАЙДЕНЫ, РАЗМЕР ПОДХОДИТ":"НЕТ НЕОБХОДИМОЙ СХЕМЫ / РАЗМЕРА"),
+   "НЕ ПРОВЕРЕНО: загрузка, текущий слот, реальное железо, USB-восстановление. НИКАКОЙ ЗАПИСИ НЕ БЫЛО.");
+  out.textContent=lines.join("\n");
+ }catch(e){out.textContent="ПРОВЕРКА НЕ ПРОЙДЕНА: "+String(e.message||e)+"\nНичего не записано на часы.";}
+});
+</script>
+</body></html>
