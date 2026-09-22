@@ -27,6 +27,23 @@ class FirmwareSafetyContract(unittest.TestCase):
         self.assertIn("esp_random()", SOURCE)
         self.assertNotRegex(SOURCE, r"WiFi\.begin\(\s*[\"']")
 
+    def test_menu_partial_refresh_is_bounded(self):
+        self.assertIn("showNeuroMenu(true)", SOURCE)
+        self.assertIn("menuPartialRefreshes < 6", SOURCE)
+        self.assertIn("display.display(partial)", SOURCE)
+
+    def test_battery_does_not_use_float_printf(self):
+        self.assertNotIn("%.2f", SOURCE)
+        self.assertIn("centivolts", SOURCE)
+
+    def test_ota_requires_large_slots_and_otadata(self):
+        self.assertIn("ESP_PARTITION_SUBTYPE_DATA_OTA", SOURCE)
+        self.assertIn("NW_MIN_OTA_SLOT_BYTES", SOURCE)
+        self.assertIn("running->address != a->address", SOURCE)
+
+    def test_same_face_does_not_rewrite_nvs(self):
+        self.assertIn("if (previous != retainedFace)", SOURCE)
+
     def test_no_flash_partition_or_bootloader_writes(self):
         self.assertNotIn("esp_partition_write(", SOURCE)
         self.assertNotIn("esp_flash_write(", SOURCE)
