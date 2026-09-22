@@ -7,3 +7,6 @@
 #define NW_UTC_OFFSET_SECONDS (5 * 3600)
 #define NW_MIN_OTA_VOLTAGE 3.75f
 #define NW_OTA_TIMEOUT_SECONDS 180
+
+// Refuse OTA unless both physical app slots can hold a ~1.83 MB image.
+#define NW_MIN_OTA_SLOT_BYTES 0x1E0000UL
