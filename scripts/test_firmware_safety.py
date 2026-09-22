@@ -44,6 +44,11 @@ class FirmwareSafetyContract(unittest.TestCase):
     def test_same_face_does_not_rewrite_nvs(self):
         self.assertIn("if (previous != retainedFace)", SOURCE)
 
+    def test_vector_clock_uses_no_large_bitmap_font(self):
+        self.assertNotIn("FreeMonoBold18pt7b.h", SOURCE)
+        self.assertIn("void digit(int x, int y, uint8_t value)", SOURCE)
+        self.assertIn("digit(25, 31, hour / 10)", SOURCE)
+
     def test_no_flash_partition_or_bootloader_writes(self):
         self.assertNotIn("esp_partition_write(", SOURCE)
         self.assertNotIn("esp_flash_write(", SOURCE)
