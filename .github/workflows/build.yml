@@ -25,6 +25,8 @@ jobs:
           arduino-cli core update-index --additional-urls "$INDEX"
           arduino-cli core install esp32:esp32@2.0.15 --additional-urls "$INDEX"
           arduino-cli lib install 'Watchy@1.4.7'
+          # WatchyRTC::WatchyRTC() uses the pre-v3 DS3232RTC constructor.
+          arduino-cli lib install 'DS3232RTC@2.0.1'
           arduino-cli lib install 'WiFiManager@2.0.17'
           arduino-cli board details -b 'esp32:esp32:watchy'
       - name: Build watch-only application image
