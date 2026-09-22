@@ -1,8 +1,9 @@
-name: NeuroWatch V2 build (UNVERIFIED OTA candidate)
+name: NeuroWatch v0.4 Watchy V2 (UNVERIFIED OTA candidate)
 on:
   push:
     paths:
       - 'firmware/**'
+      - 'studio/**'
       - 'scripts/**'
       - '.github/workflows/build.yml'
   workflow_dispatch:
@@ -38,7 +39,7 @@ jobs:
           IMAGE=build/NeuroWatch_OS.ino.bin
           test -s "$IMAGE"
           python3 scripts/check_ota.py "$IMAGE"
-          cp "$IMAGE" release/NeuroWatch-OS-v0.3-Watchy-V2-UNVERIFIED-APP.bin
+          cp "$IMAGE" release/NeuroWatch-OS-v0.4-Watchy-V2-UNVERIFIED-APP.bin
           sha256sum release/*.bin > release/SHA256SUMS.txt
           printf '%s\n' 'NOT HARDWARE TESTED. DO NOT FLASH UNTIL FACTORY PARTITIONS AND USB RECOVERY ARE VERIFIED.' > release/READ_BEFORE_FLASHING.txt
       - uses: actions/upload-artifact@v4
