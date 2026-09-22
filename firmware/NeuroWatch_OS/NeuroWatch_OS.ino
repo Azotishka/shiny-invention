@@ -157,7 +157,6 @@ class NeuroWatch : public Watchy {
       textRow(99, "[ SYS MONITOR ]");
 #if NW_SHOW_VOLTAGE
       batteryRow(buf, sizeof(buf), 117);
-      textRow(117, buf);
 #endif
 #if NW_SHOW_HEAP
       snprintf(buf, sizeof(buf), "HEAP: %lu B",
