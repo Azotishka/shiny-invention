@@ -2,7 +2,6 @@
 #include <Watchy.h>
 #include <WiFiManager.h>
 #include <WiFi.h>
-#include <Fonts/FreeMonoBold18pt7b.h>
 #include <esp_system.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
@@ -42,7 +41,7 @@ class NeuroWatch : public Watchy {
     if (retainedFace == 2) diagnostics();
     else timePanel();
     display.drawLine(5, 178, 194, 178, GxEPD_BLACK);
-    label(7, 186, "NW v0.5   MENU: OPTIONS");
+    label(7, 186, "NW v0.6   MENU: OPTIONS");
   }
 
   void setFace(uint8_t face) { retainedFace = face <= 2 ? face : 0; }
@@ -137,13 +136,32 @@ class NeuroWatch : public Watchy {
   }
   void textRow(int y, const char *s) { label(7, y, s); }
 
+  // Four vector digits replace a large bitmap font in program memory.
+  void digit(int x, int y, uint8_t value) {
+    static const uint8_t segments[10] = {
+        0x3f, 0x06, 0x5b, 0x4f, 0x66,
+        0x6d, 0x7d, 0x07, 0x7f, 0x6f};
+    const uint8_t bits = segments[value % 10];
+    constexpr int w = 29, h = 38, t = 4, mid = h / 2;
+    if (bits & 0x01) display.fillRect(x + t, y, w - 2*t, t, GxEPD_BLACK);
+    if (bits & 0x02) display.fillRect(x + w - t, y + t, t, mid - t, GxEPD_BLACK);
+    if (bits & 0x04) display.fillRect(x + w - t, y + mid, t, mid - t, GxEPD_BLACK);
+    if (bits & 0x08) display.fillRect(x + t, y + h - t, w - 2*t, t, GxEPD_BLACK);
+    if (bits & 0x10) display.fillRect(x, y + mid, t, mid - t, GxEPD_BLACK);
+    if (bits & 0x20) display.fillRect(x, y + t, t, mid - t, GxEPD_BLACK);
+    if (bits & 0x40) display.fillRect(x + t, y + mid - t/2, w - 2*t, t, GxEPD_BLACK);
+  }
+
   void timePanel() {
     char buf[30];
-    snprintf(buf, sizeof(buf), "%02u:%02u",
-             (unsigned)currentTime.Hour, (unsigned)currentTime.Minute);
-    display.setFont(&FreeMonoBold18pt7b);
-    display.setCursor(7, 61);
-    display.print(buf);
+    const uint8_t hour = currentTime.Hour % 24;
+    const uint8_t minute = currentTime.Minute % 60;
+    digit(25, 31, hour / 10);
+    digit(59, 31, hour % 10);
+    display.fillRect(94, 42, 4, 4, GxEPD_BLACK);
+    display.fillRect(94, 56, 4, 4, GxEPD_BLACK);
+    digit(105, 31, minute / 10);
+    digit(139, 31, minute % 10);
     snprintf(buf, sizeof(buf), "%02u/%02u/%04d",
              (unsigned)currentTime.Day, (unsigned)currentTime.Month,
              tmYearToCalendar(currentTime.Year));
