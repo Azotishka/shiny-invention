@@ -1,15 +1,42 @@
-# NeuroWatch OS — Cyber Terminal (Watchy V2)
+# NeuroWatch OS v0.4 — Cyber Terminal (Watchy V2)
 
-This repository is a **development prototype**, not verified firmware for a physical watch.
+> **Статус: тестовая сборка для проверки кода, НЕ разрешение прошивать часы.** Сборка GitHub Actions не проверяет физическое устройство. Без резервной копии заводской Flash и подтверждённой таблицы разделов первая Wi-Fi-запись может сделать часы неработоспособными. Прямое восстановление через Safari на iPhone не гарантировано.
 
-Target inferred from device screenshots: ESP32-PICO-D4, 4 MB flash, RTC PCF8563, 200×200 E-Paper, Watchy library 1.4.6. The actual factory flash partition table and recovery path are **unknown**. The factory WiFiManager upload form is not proof that a valid second OTA partition is available.
+## Для каких часов
 
-## Development workflow (iPhone only)
+Проверено только **по фотографиям пользователя**: ESP32-PICO-D4, 4 МБ физической Flash, PSRAM 0, RTC PCF8563, монохромный E-Paper 200×200, заводская библиотека Watchy 1.4.6. Предположительная ревизия платы — V2.0. Точный номер платы и **исходная** таблица разделов заводской прошивки не прочитаны.
 
-GitHub Actions compiles a **candidate app-only ESP32 image**. A successful build is **not** permission to flash it: first identify actual running/next OTA partitions and arrange a verified USB recovery and factory backup. Do not upload source ZIP, bootloader or partition table to the watch. **Do not attempt BLE OTA** on this device; it previously became unresponsive until battery reconnection.
+На заводском WiFiManager было показано «Sketch 1841728 / 4987456 bytes», хотя физической Flash всего 4194304 байта. Поэтому этому значению **нельзя доверять** как размеру доступного OTA-раздела. Наличие кнопки «Upload New Firmware» говорит лишь о наличии веб-формы: она не доказывает, что загрузчик способен записать второй app-раздел. Заводская конфигурация «Huge APP / No OTA» с такой формой несовместима.
 
-The watch code preserves deep sleep, handles four physical buttons, provides three E-Paper faces and a button-activated Wi-Fi portal with a random access-point password. The portal is for later updates **only if** the installed partition table has two valid physical OTA app slots and the battery voltage is sufficient. It does not add OTA slots to the factory layout.
+## Что есть в исходниках
 
-Sources: [upstream Watchy v1.4.7](https://github.com/sqfmi/Watchy/tree/v1.4.7), [ESP32 Arduino 2.0.15](https://github.com/espressif/arduino-esp32/tree/2.0.15), [WiFiManager 2.0.17](https://github.com/tzapu/WiFiManager/tree/v2.0.17).
+- Три варианта 200×200 циферблата: Terminal, Minimal, Diagnostics.
+- Время и дата из RTC, показ напряжения аккумулятора (не недостоверный процент), свободная RAM и размер Flash.
+- Четыре кнопки: MENU на циферблате открывает меню; UP/DOWN меняют пункт; MENU выбирает; BACK возвращает. На циферблате одиночный BACK ничего не прошивает и не включает Wi-Fi.
+- Выбор циферблата хранится в NVS. Радиомодуль не включается при обычном ежеминутном пробуждении; используется штатный deep sleep Watchy.
+- Отдельный явный пункт **WIFI UPDATE**. До запуска точки доступа проверяется наличие двух различных app OTA-разделов внутри физической памяти 4 МБ и напряжение батареи. При провале проверок обновление не запускается.
+- У портала временный случайный пароль WPA2, отображаемый на E-Paper. Пользователь, увидевший пароль, сможет загрузить чужую прошивку: не открывайте портал в людных местах. Нет Secure Boot/подписанных релизов.
+- Wi-Fi OTA ограничено таймаутом ожидания. Передача через браузер запускается **только по личному выбору пользователя**, не автоматически. Старый BLE OTA исключён из меню (ранее часы застряли в нём).
+- Веб-конструктор Studio работает офлайн на iPhone. Он делает **предпросмотр и экспорт конфигурации** (файл `neuro_config.h`), но **не управляет установленными часами напрямую**; чтобы применить настройку, нужно пересобрать прошивку.
 
-Do not embed passwords, personal information or API keys in this public repository. Firmware is experimental until a hardware run and safe rollback are verified.
+Отсутствуют: ИИ на самих часах, голос, синхронизация с iPhone, автономные уведомления и проверенный откат при неудачном обновлении. Их нельзя обещать как готовые функции v0.4.
+
+## Сборка на GitHub с iPhone
+
+1. Открыть [GitHub Actions](https://github.com/Azotishka/shiny-invention/actions), выбрать **NeuroWatch v0.4 Watchy V2**, дождаться зелёной отметки.
+2. Открыть запуск, скачать артефакт `NeuroWatch-V2-UNVERIFIED-OTA-CANDIDATE`, распаковать в «Файлы» iPhone. Внутри **один app-only `.bin`**, предупреждение и SHA256; **не загружать ZIP, `.h`, bootloader или файл таблицы разделов в часы**.
+3. После редактирования `firmware/NeuroWatch_OS/neuro_config.h` Actions пересоберёт файл. Исходный код использует Watchy 1.4.7, ESP32 Arduino 2.0.15, WiFiManager 2.0.17 и DS3232RTC 2.0.1. Аппаратная конфигурация компилятора: `esp32:esp32:watchy:Revision=v20,PartitionScheme=min_spiffs`.
+4. **Остановиться перед первой установкой**, даже если Actions зелёный: GitHub не может прочитать Flash-разделы именно вашей заводской прошивки и не может протестировать кнопки, RTC, E-Paper и режим энергопотребления на часах.
+
+## Когда первая прошивка станет допустимой
+
+- Физически собрать корпус и надёжно закрепить аккумулятор, не пережимая провода и не оставляя плату открытой.
+- Определить реальную таблицу разделов **установленной** заводской прошивки и убедиться, что у неё есть два отдельных app OTA-раздела достаточного размера. Таблица разделов выбранная в GitHub Actions **не переписывает заводскую таблицу** при загрузке app-only образа.
+- Подготовить независимый путь восстановления: резервная копия заводской Flash и проверенный USB-способ восстановить загрузчик/разметку/приложение в случае сбоя. В одной только Safari такой гарантии нет. Если пользователь работает исключительно с iPhone и доступа к такому пути нет, **прошивать пока нельзя**.
+- Только после этого проводить первую запись с заряженным аккумулятором и стабильным питанием. Не прерывать передачу/перезагрузку, проверить реальную работу и возможность последующих OTA.
+
+## Проверки
+
+`python3 -m unittest discover -s scripts -p 'test_*.py' -v` проверяет формат app-образа и статические инварианты безопасности. CI также компилирует код для указанного V2-профиля, проверяет размер бинарника и публикует контрольную сумму. Эти проверки **не являются аппаратными испытаниями**; наличие или отсутствие неохваченных багов выяснится только на реальных часах.
+
+Документация: [Watchy v1.4.7](https://github.com/sqfmi/Watchy/tree/v1.4.7), [ESP32 Arduino 2.0.15](https://github.com/espressif/arduino-esp32/tree/2.0.15), [WiFiManager](https://github.com/tzapu/WiFiManager), [ESP32 min_spiffs 4 МБ](https://github.com/espressif/arduino-esp32/blob/2.0.15/tools/partitions/min_spiffs.csv).
