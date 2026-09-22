@@ -41,7 +41,7 @@ class NeuroWatch : public Watchy {
     if (retainedFace == 2) diagnostics();
     else timePanel();
     display.drawLine(5, 178, 194, 178, GxEPD_BLACK);
-    label(7, 186, "NW v0.3   BACK: OTA");
+    label(7, 186, "NW v0.4   MENU: OPTIONS");
   }
 
   void setFace(uint8_t face) { retainedFace = face <= 2 ? face : 0; }
@@ -52,8 +52,6 @@ class NeuroWatch : public Watchy {
       if (pressed & MENU_BTN_MASK) {
         menuIndex = 0;
         showNeuroMenu();
-      } else if (pressed & BACK_BTN_MASK) {
-        runSafeUpdater();
       }
     } else if (guiState == MAIN_MENU_STATE) {
       if (pressed & BACK_BTN_MASK) {
@@ -146,7 +144,7 @@ class NeuroWatch : public Watchy {
     if (retainedFace == 1) {
       textRow(106, "[ TERMINAL MINIMAL ]");
       textRow(134, "MENU  : SETTINGS");
-      textRow(149, "BACK  : WIFI UPDATE");
+      textRow(149, "BACK  : NO ACTION");
     } else {
       textRow(99, "[ SYS MONITOR ]");
 #if NW_SHOW_VOLTAGE
