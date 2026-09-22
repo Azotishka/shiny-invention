@@ -23,7 +23,7 @@ pre{overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;b
 <div id="time" class="big">22:37</div><div id="date">23/09/2026</div><hr class="rule">
 <div id="heading">[ SYS MONITOR ]</div>
 <div id="battery">BAT: --.-- V</div><div id="heap">HEAP: ----- B</div><div id="wifi">WIFI: OFF / ON DEMAND</div>
-<hr class="rule"><div>NW v0.4   MENU: OPTIONS</div></div>
+<hr class="rule"><div>NW v0.5   MENU: OPTIONS</div></div>
 <label class="control">Циферблат<select id="face"><option value="0">Terminal</option><option value="1">Minimal</option><option value="2">Diagnostics</option></select></label>
 <label class="control">Показывать напряжение<input id="voltage" type="checkbox" checked></label>
 <label class="control">Показывать память<input id="showheap" type="checkbox" checked></label>
@@ -49,6 +49,7 @@ function configuration(){
  "#define NW_UTC_OFFSET_SECONDS ("+utc+" * 3600)",
  "#define NW_MIN_OTA_VOLTAGE 3.75f",
  "#define NW_OTA_TIMEOUT_SECONDS 180",
+ "#define NW_MIN_OTA_SLOT_BYTES 0x1E0000UL",
  ""
  ].join("\n");
 }
