@@ -42,7 +42,7 @@ class NeuroWatch : public Watchy {
     if (retainedFace == 2) diagnostics();
     else timePanel();
     display.drawLine(5, 178, 194, 178, GxEPD_BLACK);
-    label(7, 186, "NW v0.4   MENU: OPTIONS");
+    label(7, 186, "NW v0.5   MENU: OPTIONS");
   }
 
   void setFace(uint8_t face) { retainedFace = face <= 2 ? face : 0; }
