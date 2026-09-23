@@ -117,6 +117,85 @@ h = h.replace(
     "                          '<b>3.</b> Приложение само проверит чип, сохранит заводскую Flash и только после подтверждения начнёт запись',"
 )
 
+
+# Strengthen CH9102 auto-reset handling: the user's physical watch enumerates
+# as 1A86:55D4, but generic esptool reset did not put the ESP into ROM loader.
+old_open = r'''async function openChip() {
+  try {
+    return await connectLoader('no_reset', 2);
+  } catch (e) {
+    log(t().resetFailed(e.message), 'err');
+    log(t().retryWithReset, 'info');
+    try { Android.disconnect(); } catch(_) {}
+    await new Promise(r => setTimeout(r, 800));
+    return await connectLoader('default_reset', 3);
+  }
+}'''
+new_open = r'''async function connectLoaderWithSignalSequence(name, steps, attempts = 2) {
+  const serialPort = new AndroidSerialPort();
+  const res = Android.connect();
+  if (res !== 'ok') throw new Error(res);
+  log('USB-порт открыт; пробую ' + name, 'info');
+
+  for (const [rts, dtr, delayMs] of steps) {
+    Android.setSignals(rts, dtr);
+    await new Promise(r => setTimeout(r, delayMs));
+  }
+
+  const transport = new esptool.Transport(serialPort, false);
+  const loader = new esptool.ESPLoader({ transport, baudrate: 115200, terminal });
+  await loader.connect('no_reset', attempts);
+  const chip = await loader.chip.getChipDescription(loader);
+  loader.info('Chip is ' + chip);
+  if (loader.chip.postConnect) await loader.chip.postConnect(loader);
+  await loader.runStub();
+  return { loader, serialPort, chip };
+}
+
+async function openChip() {
+  const vid = Android.usbVendorId();
+  const pid = Android.usbProductId();
+
+  // Physical device observed on Xiaomi Pad 7 Pro: WCH/QinHeng CH9102 1A86:55D4.
+  // Try several harmless reset/boot control-line sequences before giving up.
+  // These only toggle RTS/DTR; they do not write flash.
+  if (vid === 0x1A86 && pid === 0x55D4) {
+    const sequences = [
+      ['CH9102 reset sequence A', [[1,0,120],[0,1,120],[0,0,160]]],
+      ['CH9102 reset sequence B', [[0,1,120],[1,0,120],[0,0,160]]],
+      ['CH9102 reset sequence C', [[1,1,120],[0,1,120],[0,0,160]]],
+    ];
+    for (const [name, steps] of sequences) {
+      try {
+        return await connectLoaderWithSignalSequence(name, steps, 2);
+      } catch (e) {
+        log(name + ': ' + e.message, 'err');
+        try { Android.disconnect(); } catch(_) {}
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+    throw new Error(
+      'CH9102 виден, но ESP не вошёл в ROM bootloader. ' +
+      'DTR/RTS, вероятно, не подключены к EN/GPIO0 на этой ревизии. ' +
+      'Flash НЕ изменялась.'
+    );
+  }
+
+  try {
+    return await connectLoader('no_reset', 2);
+  } catch (e) {
+    log(t().resetFailed(e.message), 'err');
+    log(t().retryWithReset, 'info');
+    try { Android.disconnect(); } catch(_) {}
+    await new Promise(r => setTimeout(r, 800));
+    return await connectLoader('default_reset', 3);
+  }
+}'''
+
+if old_open not in h:
+    raise SystemExit("openChip patch point not found")
+h = h.replace(old_open, new_open)
+
 marker = "// ─── Прошивка ─────────────────────────────────────────────────────────────────"
 insert = r'''
 function assertSupportedNeuroWatchChip(chip) {
