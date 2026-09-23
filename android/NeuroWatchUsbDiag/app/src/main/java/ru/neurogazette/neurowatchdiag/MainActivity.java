@@ -70,14 +70,22 @@ public class MainActivity extends Activity {
         b.append("USB Host: ").append(host ? "да" : "нет").append("\n");
         b.append("Найдено USB-устройств: ").append(devices.size()).append("\n\n");
 
-        boolean watchyCandidate = false;
+        boolean knownCandidate = false;
         for (UsbDevice d : devices.values()) {
             int vid = d.getVendorId();
             int pid = d.getProductId();
             boolean cp2102 = vid == 0x10C4 && pid == 0xEA60;
-            if (cp2102) watchyCandidate = true;
+            boolean espUsbSerialJtag = vid == 0x303A && pid == 0x1001;
+            if (cp2102 || espUsbSerialJtag) knownCandidate = true;
 
-            b.append(cp2102 ? "★ Возможный Watchy V2 / CP2102\n" : "USB-устройство\n");
+            if (cp2102) {
+                b.append("★ Silicon Labs CP2102 — совместимо с классической Watchy V2\n");
+            } else if (espUsbSerialJtag) {
+                b.append("★ Espressif USB Serial/JTAG — типично для ESP32-S3 / Watchy V3\n");
+            } else {
+                b.append("USB-устройство\n");
+            }
+
             b.append("Имя: ").append(d.getDeviceName()).append("\n");
             b.append(String.format("VID: 0x%04X (%d)\n", vid, vid));
             b.append(String.format("PID: 0x%04X (%d)\n", pid, pid));
@@ -87,11 +95,11 @@ public class MainActivity extends Activity {
 
         if (devices.isEmpty()) {
             b.append("Android сейчас не видит ни одного USB-устройства.\n");
-            b.append("Если другое устройство определяется через тот же OTG, но Watchy нет, сначала проверь кабель Watchy: он должен поддерживать DATA, а не только зарядку.\n");
-        } else if (!watchyCandidate) {
-            b.append("CP2102 (10C4:EA60) не найден. Не прошивай часы. Сохрани этот экран для диагностики.\n");
+            b.append("Поскольку аппаратная ревизия часов ещё не подтверждена, не делаем вывод только по CP2102. Проверь data-кабель и USB-C/OTG-схему подключения.\n");
+        } else if (!knownCandidate) {
+            b.append("Известные идентификаторы CP2102 и Espressif USB Serial/JTAG не найдены. Не прошивай часы; сохрани VID/PID найденных устройств для анализа.\n");
         } else {
-            b.append("CP2102 найден. Это только подтверждение USB-соединения; запись Flash по-прежнему заблокирована на этом этапе.\n");
+            b.append("Подходящий USB-интерфейс найден. Это только диагностика соединения; запись Flash остаётся запрещена на этом этапе.\n");
         }
 
         output.setText(b.toString());
