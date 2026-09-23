@@ -182,7 +182,7 @@ replacement2 = """    session = await openChip();
     const backupLocation = await makeFactoryBackup(session);
     const proceed = confirm(
       'Резервная копия заводской системы сохранена: ' + backupLocation +
-      '\n\nПродолжить установку NeuroWatch OS? После подтверждения будут перезаписаны загрузчик, таблица разделов и приложение.'
+      '\\n\\nПродолжить установку NeuroWatch OS? После подтверждения будут перезаписаны загрузчик, таблица разделов и приложение.'
     );
     if (!proceed) {
       log('Установка отменена пользователем. Flash не изменялась.', 'info');
