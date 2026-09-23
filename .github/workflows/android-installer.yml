@@ -1,0 +1,113 @@
+name: NeuroWatch Android Safe Installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - neurowatch-installer-android
+    paths:
+      - 'firmware/**'
+      - 'scripts/patch_neurowatch_installer.py'
+      - '.github/workflows/android-installer.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-installer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: arduino/setup-arduino-cli@v2
+
+      - name: Install pinned ESP32 core and Watchy libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          INDEX=https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index --additional-urls "$INDEX"
+          arduino-cli core install esp32:esp32@2.0.15 --additional-urls "$INDEX"
+          arduino-cli lib install 'Watchy@1.4.7'
+          arduino-cli lib install 'DS3232RTC@2.0.1'
+          arduino-cli lib install 'WiFiManager@2.0.17'
+
+      - name: Build NeuroWatch OS
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build installer-assets
+          arduino-cli compile             --fqbn 'esp32:esp32:watchy:Revision=v20,PartitionScheme=min_spiffs'             --build-path "$PWD/build"             firmware/NeuroWatch_OS
+          python3 scripts/check_ota.py build/NeuroWatch_OS.ino.bin
+          cp build/NeuroWatch_OS.ino.bin installer-assets/app.bin
+          cp build/NeuroWatch_OS.ino.bootloader.bin installer-assets/bootloader.bin
+          cp build/NeuroWatch_OS.ino.partitions.bin installer-assets/partitions.bin
+          BOOTAPP="$(find "$HOME/.arduino15" -type f -name boot_app0.bin | head -n 1)"
+          test -n "$BOOTAPP"
+          cp "$BOOTAPP" installer-assets/boot_app0.bin
+          ls -lh installer-assets
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Prepare pinned Android flasher
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/drakosha/esp-flash-android.git android-installer
+          cd android-installer
+          git checkout c4036ace9d2f5526e3535d1ac8bfb8ac3bafc23d
+          cd ..
+          python3 scripts/patch_neurowatch_installer.py android-installer
+          cp installer-assets/*.bin android-installer/app/src/main/assets/
+          cat > android-installer/app/src/main/assets/firmware.json <<'JSON'
+          {
+            "name": "NeuroWatch OS",
+            "version": "v0.6 Android Safe Installer",
+            "parts": [
+              { "file": "bootloader.bin", "offset": "0x1000" },
+              { "file": "partitions.bin", "offset": "0x8000" },
+              { "file": "boot_app0.bin", "offset": "0xE000" },
+              { "file": "app.bin", "offset": "0x10000" }
+            ]
+          }
+          JSON
+
+      - name: Bundle Espressif esptool-js 0.6.1
+        shell: bash
+        working-directory: android-installer
+        env:
+          ESPTOOL_VERSION: '0.6.1'
+        run: ./scripts/bundle-esptool.sh
+
+      - name: Build installer APK
+        shell: bash
+        working-directory: android-installer
+        run: |
+          set -euo pipefail
+          gradle --no-daemon :app:assembleDebug             -PappId=ru.neurogazette.neurowatchinstaller             -PappLabel='NeuroWatch Installer'             -PversionName=0.7             -PversionCode=7
+          mkdir -p ../release-installer
+          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Installer-v0.7.apk
+          sha256sum ../release-installer/NeuroWatch-Installer-v0.7.apk > ../release-installer/SHA256SUMS.txt
+          printf '%s\n'             'Installer detects classic ESP32, requires 4MB Flash, creates a full 4MB backup first, then asks again before writing.'             'If any preflight or backup step fails, do not continue.'             > ../release-installer/READ_FIRST.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeuroWatch-Installer-Android-v0.7
+          path: release-installer/
+          if-no-files-found: error
