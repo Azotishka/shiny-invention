@@ -24,6 +24,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install Python tools required by ESP32 core
+        run: python -m pip install --disable-pip-version-check pyserial
+
       - uses: arduino/setup-arduino-cli@v2
 
       - name: Install pinned ESP32 core and Watchy libraries
@@ -42,7 +45,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build installer-assets
-          arduino-cli compile             --fqbn 'esp32:esp32:watchy:Revision=v20,PartitionScheme=min_spiffs'             --build-path "$PWD/build"             firmware/NeuroWatch_OS
+          arduino-cli compile \
+            --fqbn 'esp32:esp32:watchy:Revision=v20,PartitionScheme=min_spiffs' \
+            --build-path "$PWD/build" \
+            firmware/NeuroWatch_OS
           python3 scripts/check_ota.py build/NeuroWatch_OS.ino.bin
           cp build/NeuroWatch_OS.ino.bin installer-assets/app.bin
           cp build/NeuroWatch_OS.ino.bootloader.bin installer-assets/bootloader.bin
@@ -100,11 +106,18 @@ jobs:
         working-directory: android-installer
         run: |
           set -euo pipefail
-          gradle --no-daemon :app:assembleDebug             -PappId=ru.neurogazette.neurowatchinstaller             -PappLabel='NeuroWatch Installer'             -PversionName=0.7             -PversionCode=7
+          gradle --no-daemon :app:assembleDebug \
+            -PappId=ru.neurogazette.neurowatchinstaller \
+            -PappLabel='NeuroWatch Installer' \
+            -PversionName=0.7 \
+            -PversionCode=7
           mkdir -p ../release-installer
           cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Installer-v0.7.apk
           sha256sum ../release-installer/NeuroWatch-Installer-v0.7.apk > ../release-installer/SHA256SUMS.txt
-          printf '%s\n'             'Installer detects classic ESP32, requires 4MB Flash, creates a full 4MB backup first, then asks again before writing.'             'If any preflight or backup step fails, do not continue.'             > ../release-installer/READ_FIRST.txt
+          printf '%s\n' \
+            'Installer detects classic ESP32, requires 4MB Flash, creates a full 4MB backup first, then asks again before writing.' \
+            'If any preflight or backup step fails, do not continue.' \
+            > ../release-installer/READ_FIRST.txt
 
       - uses: actions/upload-artifact@v4
         with:
