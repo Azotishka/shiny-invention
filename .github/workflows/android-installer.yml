@@ -1,0 +1,158 @@
+name: NeuroWatch Android Safe Installer
+
+on:
+  push:
+    branches:
+      - android-neurowatch-installer
+    paths:
+      - 'firmware/**'
+      - 'scripts/**'
+      - '.github/workflows/android-installer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight firmware tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+
+      - uses: arduino/setup-arduino-cli@v2
+
+      - name: Install locked ESP32 core and Watchy libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          INDEX=https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index --additional-urls "$INDEX"
+          arduino-cli core install esp32:esp32@2.0.15 --additional-urls "$INDEX"
+          arduino-cli lib install 'Watchy@1.4.7'
+          arduino-cli lib install 'DS3232RTC@2.0.1'
+          arduino-cli lib install 'WiFiManager@2.0.17'
+
+      - name: Build NeuroWatch OS for classic ESP32 / Watchy V2 profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build release
+          arduino-cli compile \
+            --fqbn 'esp32:esp32:watchy:Revision=v20,PartitionScheme=min_spiffs' \
+            --build-path "$PWD/build" \
+            firmware/NeuroWatch_OS
+
+          find build -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
+          test -s build/NeuroWatch_OS.ino.bin
+          test -s build/NeuroWatch_OS.ino.bootloader.bin
+          test -s build/NeuroWatch_OS.ino.partitions.bin
+          python3 scripts/check_ota.py build/NeuroWatch_OS.ino.bin
+
+      - name: Create complete 4 MB install image
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check 'esptool==4.8.1'
+          CORE="$HOME/.arduino15/packages/esp32/hardware/esp32/2.0.15"
+          BOOT_APP0="$CORE/tools/partitions/boot_app0.bin"
+          test -s "$BOOT_APP0"
+
+          python3 -m esptool --chip esp32 merge_bin \
+            -o release/NeuroWatch-OS-v0.7-FULL-ESP32-4MB.bin \
+            --flash_mode dio --flash_freq 40m --flash_size 4MB \
+            0x1000 build/NeuroWatch_OS.ino.bootloader.bin \
+            0x8000 build/NeuroWatch_OS.ino.partitions.bin \
+            0xe000 "$BOOT_APP0" \
+            0x10000 build/NeuroWatch_OS.ino.bin
+
+          test -s release/NeuroWatch-OS-v0.7-FULL-ESP32-4MB.bin
+          SIZE=$(stat -c '%s' release/NeuroWatch-OS-v0.7-FULL-ESP32-4MB.bin)
+          test "$SIZE" -le 4194304
+          sha256sum release/NeuroWatch-OS-v0.7-FULL-ESP32-4MB.bin > release/SHA256SUMS.txt
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Prepare Android installer source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .build
+          git clone https://github.com/drakosha/esp-flash-android.git .build/esp-flash-android
+          git -C .build/esp-flash-android checkout c4036ace9d2f5526e3535d1ac8bfb8ac3bafc23d
+
+          FLASHER_DIR="$PWD/.build/esp-flash-android" python3 scripts/patch_neurowatch_installer.py
+
+          # Use current usb-serial driver with explicit CH9102 support.
+          sed -i "s/usb-serial-for-android:3.7.3/usb-serial-for-android:3.10.0/" \
+            .build/esp-flash-android/app/build.gradle
+
+          cp release/NeuroWatch-OS-v0.7-FULL-ESP32-4MB.bin \
+            .build/esp-flash-android/app/src/main/assets/neurowatch-full.bin
+
+          cat > .build/esp-flash-android/app/src/main/assets/firmware.json <<'JSON'
+          {
+            "name": "NeuroWatch Installer",
+            "version": "NeuroWatch OS v0.7 / ESP32 4MB",
+            "parts": [
+              { "file": "neurowatch-full.bin", "offset": "0x0" }
+            ]
+          }
+          JSON
+
+      - name: Bundle esptool-js and build installable APK
+        shell: bash
+        working-directory: .build/esp-flash-android
+        env:
+          ESPTOOL_VERSION: '0.6.1'
+        run: |
+          set -euo pipefail
+          chmod +x scripts/bundle-esptool.sh gradlew
+          ./scripts/bundle-esptool.sh
+          ./gradlew --no-daemon assembleDebug \
+            -PappId=ru.neurogazette.neurowatchinstaller \
+            -PappLabel='NeuroWatch Installer' \
+            -PversionName=0.7 \
+            -PversionCode=7
+
+      - name: Package installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=.build/esp-flash-android/app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          cp "$APK" release/NeuroWatch-Installer-v0.7.apk
+          sha256sum release/NeuroWatch-Installer-v0.7.apk >> release/SHA256SUMS.txt
+          cat > release/INSTALL_README.txt <<'TXT'
+          NeuroWatch Installer v0.7
+          
+          1. Connect the watch over USB OTG.
+          2. Tap "Проверить часы".
+          3. The installer only unlocks backup if it detects classic ESP32 and exactly 4 MB flash.
+          4. Tap "Сделать резервную копию". A full 4 MB factory dump is saved to Downloads/NeuroWatch.
+          5. Only after the backup succeeds does "Установить NeuroWatch OS" unlock.
+          
+          DO NOT bypass the checks. The physical watch uses CH9102 USB-UART and is not an exact match
+          for the official Watchy V2 USB bridge. The firmware target is classic ESP32 / 4 MB.
+          TXT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeuroWatch-Android-Safe-Installer-v0.7
+          path: |
+            release/NeuroWatch-Installer-v0.7.apk
+            release/NeuroWatch-OS-v0.7-FULL-ESP32-4MB.bin
+            release/SHA256SUMS.txt
+            release/INSTALL_README.txt
+          if-no-files-found: error
