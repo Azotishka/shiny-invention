@@ -84,7 +84,7 @@ jobs:
           cat > android-installer/app/src/main/assets/firmware.json <<'JSON'
           {
             "name": "NeuroWatch OS",
-            "version": "v0.8 Android Safe Installer",
+            "version": "v0.9 Android Safe Installer",
             "parts": [
               { "file": "bootloader.bin", "offset": "0x1000" },
               { "file": "partitions.bin", "offset": "0x8000" },
@@ -109,11 +109,11 @@ jobs:
           gradle --no-daemon :app:assembleDebug \
             -PappId=ru.neurogazette.neurowatchinstaller \
             -PappLabel='NeuroWatch Installer' \
-            -PversionName=0.8 \
-            -PversionCode=8
+            -PversionName=0.9 \
+            -PversionCode=9
           mkdir -p ../release-installer
-          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Installer-v0.8.apk
-          sha256sum ../release-installer/NeuroWatch-Installer-v0.8.apk > ../release-installer/SHA256SUMS.txt
+          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Installer-v0.9.apk
+          sha256sum ../release-installer/NeuroWatch-Installer-v0.9.apk > ../release-installer/SHA256SUMS.txt
           printf '%s\n' \
             'Installer detects classic ESP32, requires 4MB Flash, creates a full 4MB backup first, then asks again before writing.' \
             'If any preflight or backup step fails, do not continue.' \
@@ -121,6 +121,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NeuroWatch-Installer-Android-v0.8
+          name: NeuroWatch-Installer-Android-v0.9
           path: release-installer/
           if-no-files-found: error
