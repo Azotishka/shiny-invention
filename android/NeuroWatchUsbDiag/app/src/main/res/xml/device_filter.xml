@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- WCH/QinHeng CH9102 USB-UART, observed on the user's physical watch -->
+    <usb-device vendor-id="6790" product-id="21972" />
+    <!-- Silicon Labs CP2102, used on classic Watchy V2 -->
+    <usb-device vendor-id="4292" product-id="60000" />
+    <!-- Espressif built-in USB Serial/JTAG, common on ESP32-S3 / Watchy V3 -->
+    <usb-device vendor-id="12346" product-id="4097" />
+</resources>
