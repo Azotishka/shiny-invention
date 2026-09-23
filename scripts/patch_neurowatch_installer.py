@@ -838,3 +838,5 @@ h = h.replace(
 
 html.write_text(h)
 print("patched Android flasher for NeuroWatch safe-install flow")
+
+# v1.0 rebuild trigger
