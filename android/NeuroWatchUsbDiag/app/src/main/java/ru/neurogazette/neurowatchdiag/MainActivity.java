@@ -26,12 +26,12 @@ public class MainActivity extends Activity {
         root.setPadding(pad, pad, pad, pad);
 
         TextView title = new TextView(this);
-        title.setText("NeuroWatch USB Diagnostic");
+        title.setText("NeuroWatch USB Diagnostic v0.2");
         title.setTextSize(24);
         root.addView(title);
 
         TextView safety = new TextView(this);
-        safety.setText("\nREAD-ONLY режим. Приложение только перечисляет USB-устройства. Оно не переводит ESP32 в bootloader, не стирает Flash и ничего не прошивает.\n");
+        safety.setText("\nREAD-ONLY режим. Приложение только перечисляет USB-устройства. Оно не переводит ESP в bootloader, не стирает Flash и ничего не прошивает.\n");
         safety.setTextSize(16);
         root.addView(safety);
 
@@ -76,10 +76,13 @@ public class MainActivity extends Activity {
             int pid = d.getProductId();
             boolean cp2102 = vid == 0x10C4 && pid == 0xEA60;
             boolean espUsbSerialJtag = vid == 0x303A && pid == 0x1001;
-            if (cp2102 || espUsbSerialJtag) knownCandidate = true;
+            boolean ch9102 = vid == 0x1A86 && pid == 0x55D4;
+            if (cp2102 || espUsbSerialJtag || ch9102) knownCandidate = true;
 
-            if (cp2102) {
-                b.append("★ Silicon Labs CP2102 — совместимо с классической Watchy V2\n");
+            if (ch9102) {
+                b.append("★ WCH/QinHeng CH9102 USB-UART — USB DATA подтверждён\n");
+            } else if (cp2102) {
+                b.append("★ Silicon Labs CP2102 — классический USB-UART Watchy V2\n");
             } else if (espUsbSerialJtag) {
                 b.append("★ Espressif USB Serial/JTAG — типично для ESP32-S3 / Watchy V3\n");
             } else {
@@ -94,12 +97,12 @@ public class MainActivity extends Activity {
         }
 
         if (devices.isEmpty()) {
-            b.append("Android сейчас не видит ни одного USB-устройства.\n");
-            b.append("Поскольку аппаратная ревизия часов ещё не подтверждена, не делаем вывод только по CP2102. Проверь data-кабель и USB-C/OTG-схему подключения.\n");
+            b.append("Android сейчас не видит ни одного USB-устройства. Не прошивай часы.\n");
         } else if (!knownCandidate) {
-            b.append("Известные идентификаторы CP2102 и Espressif USB Serial/JTAG не найдены. Не прошивай часы; сохрани VID/PID найденных устройств для анализа.\n");
+            b.append("USB-устройство видно, но его VID/PID пока не распознаны. Не прошивай часы; сохрани VID/PID для анализа.\n");
         } else {
-            b.append("Подходящий USB-интерфейс найден. Это только диагностика соединения; запись Flash остаётся запрещена на этом этапе.\n");
+            b.append("USB-соединение подтверждено. Это ещё НЕ подтверждает точную ревизию платы или совместимость прошивки.\n");
+            b.append("Следующий безопасный этап: открыть serial-порт в read-only режиме и определить микроконтроллер без записи Flash.\n");
         }
 
         output.setText(b.toString());
