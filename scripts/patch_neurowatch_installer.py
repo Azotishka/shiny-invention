@@ -3,6 +3,7 @@ from pathlib import Path
 
 root = Path(__import__("sys").argv[1])
 js = root / "app/src/main/java/io/github/drakosha/espflash/JsBridge.kt"
+usb = root / "app/src/main/java/io/github/drakosha/espflash/UsbSerialManager.kt"
 html = root / "app/src/main/assets/flash.html"
 
 s = js.read_text()
@@ -170,7 +171,58 @@ replacement = '''    @JavascriptInterface
 if needle not in s:
     raise SystemExit("JsBridge insertion point not found")
 s = s.replace(needle, replacement)
+
+bridge_clear_needle = '''    @JavascriptInterface
+    fun readData(): String = usbManager.readBufferedBase64()
+
+    @JavascriptInterface
+    fun setSignals(rts: Int, dtr: Int) = usbManager.setSignals(rts, dtr)
+'''
+bridge_clear_replacement = '''    @JavascriptInterface
+    fun readData(): String = usbManager.readBufferedBase64()
+
+    @JavascriptInterface
+    fun clearInput() = usbManager.clearBufferedInput()
+
+    @JavascriptInterface
+    fun setSignals(rts: Int, dtr: Int) = usbManager.setSignals(rts, dtr)
+'''
+if bridge_clear_needle not in s:
+    raise SystemExit("JsBridge clearInput patch point not found")
+s = s.replace(bridge_clear_needle, bridge_clear_replacement)
 js.write_text(s)
+
+u = usb.read_text()
+usb_clear_needle = '''    fun readBufferedBase64(): String {
+        synchronized(readLock) {
+            if (readBuf.size() == 0) return ""
+            val data = readBuf.toByteArray()
+            readBuf.reset()
+            return Base64.encodeToString(data, Base64.NO_WRAP)
+        }
+    }
+
+    private fun readLoop() {
+'''
+usb_clear_replacement = '''    fun readBufferedBase64(): String {
+        synchronized(readLock) {
+            if (readBuf.size() == 0) return ""
+            val data = readBuf.toByteArray()
+            readBuf.reset()
+            return Base64.encodeToString(data, Base64.NO_WRAP)
+        }
+    }
+
+    fun clearBufferedInput() {
+        synchronized(readLock) { readBuf.reset() }
+    }
+
+    private fun readLoop() {
+'''
+if usb_clear_needle not in u:
+    raise SystemExit("UsbSerialManager clear-buffer patch point not found")
+u = u.replace(usb_clear_needle, usb_clear_replacement)
+usb.write_text(u)
 
 h = html.read_text()
 
@@ -306,7 +358,7 @@ async function makeFactoryBackup(session) {
   }
 
   const TOTAL = 0x00400000;
-  const CHUNK = 0x00004000; // 16 KiB: avoids the known large-read instability in esptool-js.
+  const CHUNK = 0x00001000; // 4 KiB: more reliable on CH9102 + Android USB.
   const name = 'watchy_factory_4mb_' + Date.now() + '.bin';
   const begin = Android.beginBackup(name);
   if (begin !== 'ok') {
@@ -322,8 +374,10 @@ async function makeFactoryBackup(session) {
       let data = null;
       let lastError = null;
 
-      for (let attempt = 1; attempt <= 4; attempt++) {
+      for (let attempt = 1; attempt <= 5; attempt++) {
         try {
+          if (Android.clearInput) Android.clearInput();
+          await new Promise(r => setTimeout(r, 80));
           data = await currentSession.loader.readFlash(offset, length);
           if (!data || data.length !== length) {
             throw new Error('получено ' + (data ? data.length : 0) + ' байт вместо ' + length);
@@ -334,14 +388,22 @@ async function makeFactoryBackup(session) {
           lastError = e;
           log(
             'Сбой чтения @0x' + offset.toString(16) +
-            ' (попытка ' + attempt + '/4): ' + e.message,
+            ' (попытка ' + attempt + '/5): ' + e.message,
             'err'
           );
-          try { await currentSession.serialPort.close(); } catch(_) {}
-          try { Android.disconnect(); } catch(_) {}
-          await new Promise(r => setTimeout(r, 600));
-
+          // First retries stay on the already-working stub session.
+          // Reopening USB immediately can lose bootloader mode on this CH9102 board.
           if (attempt < 4) {
+            if (Android.clearInput) Android.clearInput();
+            await new Promise(r => setTimeout(r, 220));
+            continue;
+          }
+
+          // One last recovery attempt: fully restart the bootloader session.
+          if (attempt === 4) {
+            try { await currentSession.serialPort.close(); } catch(_) {}
+            try { Android.disconnect(); } catch(_) {}
+            await new Promise(r => setTimeout(r, 700));
             currentSession = await openChip();
             assertSupportedNeuroWatchChip(currentSession.chip);
           }
