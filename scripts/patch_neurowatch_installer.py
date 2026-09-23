@@ -38,16 +38,24 @@ replacement = '''    @JavascriptInterface
     @JavascriptInterface
     fun usbProductId(): Int = usbManager.findDevice()?.productId ?: 0
 
+    private var backupUri: Uri? = null
+    private var backupStream: java.io.OutputStream? = null
+    private var backupDisplayName: String = ""
+    private var backupBytes: Long = 0L
+    private var backupLegacyFile: File? = null
+
     /**
-     * Save a factory flash backup to Downloads/NeuroWatch on Android 10+.
-     * This is deliberately separate from flashing so a readable backup exists
-     * before any write is allowed.
+     * Start a pending backup file. Chunks are appended from JS as they are
+     * successfully read, so a full 4 MB image never has to cross the bridge
+     * in one giant Base64 string.
      */
     @JavascriptInterface
-    fun saveBackupBase64(b64: String, name: String): String {
+    fun beginBackup(name: String): String {
+        abortBackup()
         val safeName = name.replace(Regex("[^A-Za-z0-9._-]"), "_")
         return try {
-            val bytes = Base64.decode(b64, Base64.NO_WRAP)
+            backupDisplayName = safeName
+            backupBytes = 0L
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val values = ContentValues().apply {
                     put(MediaStore.Downloads.DISPLAY_NAME, safeName)
@@ -58,24 +66,102 @@ replacement = '''    @JavascriptInterface
                 val uri = context.contentResolver.insert(
                     MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
                 ) ?: return "error: cannot create backup in Downloads"
-                context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
-                    ?: return "error: cannot open backup output"
-                values.clear()
-                values.put(MediaStore.Downloads.IS_PENDING, 0)
-                context.contentResolver.update(uri, values, null, null)
-                "ok: Downloads/NeuroWatch/$safeName"
+                val stream = context.contentResolver.openOutputStream(uri, "w")
+                    ?: run {
+                        context.contentResolver.delete(uri, null, null)
+                        return "error: cannot open backup output"
+                    }
+                backupUri = uri
+                backupStream = stream
+                "ok"
             } else {
                 val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
                     ?: return "error: Downloads directory unavailable"
                 if (!dir.exists()) dir.mkdirs()
                 val file = File(dir, safeName)
-                file.writeBytes(bytes)
-                "ok: ${file.absolutePath}"
+                backupLegacyFile = file
+                backupStream = file.outputStream()
+                "ok"
             }
         } catch (e: Exception) {
-            Log.e(TAG, "saveBackup failed", e)
+            Log.e(TAG, "beginBackup failed", e)
+            abortBackup()
             "error: ${e.message}"
         }
+    }
+
+    @JavascriptInterface
+    fun appendBackupBase64(b64: String): String {
+        val stream = backupStream ?: return "error: backup not started"
+        return try {
+            val bytes = Base64.decode(b64, Base64.NO_WRAP)
+            stream.write(bytes)
+            backupBytes += bytes.size.toLong()
+            backupBytes.toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "appendBackup failed", e)
+            "error: ${e.message}"
+        }
+    }
+
+    @JavascriptInterface
+    fun finishBackup(expectedBytes: Long): String {
+        val stream = backupStream ?: return "error: backup not started"
+        return try {
+            stream.flush()
+            stream.close()
+            backupStream = null
+
+            if (backupBytes != expectedBytes) {
+                val got = backupBytes
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    backupUri?.let { context.contentResolver.delete(it, null, null) }
+                } else {
+                    backupLegacyFile?.delete()
+                }
+                backupUri = null
+                backupLegacyFile = null
+                backupBytes = 0L
+                return "error: backup size mismatch: $got != $expectedBytes"
+            }
+
+            val location = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val uri = backupUri ?: return "error: backup URI missing"
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.IS_PENDING, 0)
+                }
+                context.contentResolver.update(uri, values, null, null)
+                "Downloads/NeuroWatch/$backupDisplayName"
+            } else {
+                backupLegacyFile?.absolutePath ?: "backup saved"
+            }
+
+            backupUri = null
+            backupLegacyFile = null
+            backupBytes = 0L
+            "ok: $location"
+        } catch (e: Exception) {
+            Log.e(TAG, "finishBackup failed", e)
+            abortBackup()
+            "error: ${e.message}"
+        }
+    }
+
+    @JavascriptInterface
+    fun abortBackup(): String {
+        try { backupStream?.close() } catch (_: Exception) {}
+        backupStream = null
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                backupUri?.let { context.contentResolver.delete(it, null, null) }
+            } else {
+                backupLegacyFile?.delete()
+            }
+        } catch (_: Exception) {}
+        backupUri = null
+        backupLegacyFile = null
+        backupBytes = 0L
+        return "ok"
     }
 
     @JavascriptInterface
@@ -219,30 +305,83 @@ async function makeFactoryBackup(session) {
     throw new Error('Установка остановлена: ожидалось 4MB Flash, определено ' + flashSize + '. Ничего не записано.');
   }
 
-  log('Создаём резервную копию заводской Flash 4 MB… Это может занять несколько минут.', 'info');
-  setProgress('Резервная копия…', 2);
-  const backup = await session.loader.readFlash(
-    0x00000000,
-    0x00400000,
-    (packet, progress, total) => {
-      const pct = total ? Math.round(progress * 100 / total) : 0;
-      setProgress('Резервная копия: ' + pct + '%', Math.max(2, Math.min(9, Math.round(pct * 0.09))));
-    }
-  );
-  if (!backup || backup.length !== 0x00400000) {
-    throw new Error('Резервная копия неполная: получено ' + (backup ? backup.length : 0) + ' байт вместо 4194304. Ничего не записано.');
+  const TOTAL = 0x00400000;
+  const CHUNK = 0x00004000; // 16 KiB: avoids the known large-read instability in esptool-js.
+  const name = 'watchy_factory_4mb_' + Date.now() + '.bin';
+  const begin = Android.beginBackup(name);
+  if (begin !== 'ok') {
+    throw new Error('Не удалось создать файл резервной копии: ' + begin);
   }
 
-  const saveResult = Android.saveBackupBase64(
-    bytesToB64(backup),
-    'watchy_factory_4mb_' + Date.now() + '.bin'
-  );
-  if (!String(saveResult).startsWith('ok:')) {
-    throw new Error('Не удалось сохранить резервную копию: ' + saveResult + '. Ничего не записано.');
+  log('Создаём резервную копию заводской Flash 4 MB небольшими блоками…', 'info');
+  let currentSession = session;
+
+  try {
+    for (let offset = 0; offset < TOTAL; offset += CHUNK) {
+      const length = Math.min(CHUNK, TOTAL - offset);
+      let data = null;
+      let lastError = null;
+
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        try {
+          data = await currentSession.loader.readFlash(offset, length);
+          if (!data || data.length !== length) {
+            throw new Error('получено ' + (data ? data.length : 0) + ' байт вместо ' + length);
+          }
+          lastError = null;
+          break;
+        } catch (e) {
+          lastError = e;
+          log(
+            'Сбой чтения @0x' + offset.toString(16) +
+            ' (попытка ' + attempt + '/4): ' + e.message,
+            'err'
+          );
+          try { await currentSession.serialPort.close(); } catch(_) {}
+          try { Android.disconnect(); } catch(_) {}
+          await new Promise(r => setTimeout(r, 600));
+
+          if (attempt < 4) {
+            currentSession = await openChip();
+            assertSupportedNeuroWatchChip(currentSession.chip);
+          }
+        }
+      }
+
+      if (lastError || !data) {
+        Android.abortBackup();
+        throw new Error(
+          'Не удалось надёжно прочитать заводскую Flash @0x' +
+          offset.toString(16) + ': ' + (lastError ? lastError.message : 'unknown error') +
+          '. Ничего не записано.'
+        );
+      }
+
+      const append = Android.appendBackupBase64(bytesToB64(data));
+      if (String(append).startsWith('error:')) {
+        Android.abortBackup();
+        throw new Error('Ошибка сохранения резервной копии: ' + append + '. Ничего не записано.');
+      }
+
+      const done = offset + length;
+      const pct = Math.round(done * 100 / TOTAL);
+      setProgress('Резервная копия: ' + pct + '%', 2 + Math.round(pct * 0.43));
+    }
+
+    const finish = Android.finishBackup(TOTAL);
+    if (!String(finish).startsWith('ok:')) {
+      Android.abortBackup();
+      throw new Error('Не удалось завершить резервную копию: ' + finish + '. Ничего не записано.');
+    }
+
+    log('Заводская Flash сохранена: ' + finish, 'ok');
+    return { location: finish, session: currentSession };
+  } catch (e) {
+    Android.abortBackup();
+    throw e;
   }
-  log('Заводская Flash сохранена: ' + saveResult, 'ok');
-  return saveResult;
 }
+
 
 '''
 if marker not in h:
@@ -258,7 +397,9 @@ replacement2 = """    session = await openChip();
     log(t().chip(session.chip), 'ok');
     assertSupportedNeuroWatchChip(session.chip);
 
-    const backupLocation = await makeFactoryBackup(session);
+    const backupResult = await makeFactoryBackup(session);
+    session = backupResult.session;
+    const backupLocation = backupResult.location;
     const proceed = confirm(
       'Резервная копия заводской системы сохранена: ' + backupLocation +
       '\\n\\nПродолжить установку NeuroWatch OS? После подтверждения будут перезаписаны загрузчик, таблица разделов и приложение.'
