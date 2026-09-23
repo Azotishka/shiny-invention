@@ -120,6 +120,7 @@ p.write_text(s, encoding="utf-8")
 # UI safety gates.
 p = flasher / "app/src/main/assets/flash.html"
 s = p.read_text(encoding="utf-8")
+s = s.replace("  getInfo() { return { usbVendorId: 0x303A, usbProductId: 0x1001 }; }", "  getInfo() { return { usbVendorId: 0x1A86, usbProductId: 0x55D4 }; }")
 s = s.replace(
     '<button id="flashBtn" disabled></button>',
     '<button class="secondary" id="identifyBtn" disabled></button>\\n'
