@@ -4,6 +4,7 @@ from pathlib import Path
 root = Path(__import__("sys").argv[1])
 js = root / "app/src/main/java/io/github/drakosha/espflash/JsBridge.kt"
 usb = root / "app/src/main/java/io/github/drakosha/espflash/UsbSerialManager.kt"
+gradle = root / "app/build.gradle"
 html = root / "app/src/main/assets/flash.html"
 
 s = js.read_text()
@@ -213,6 +214,145 @@ s = s.replace(bridge_clear_needle, bridge_clear_replacement)
 js.write_text(s)
 
 u = usb.read_text()
+
+u = u.replace(
+    "import android.hardware.usb.UsbManager\n",
+    "import android.hardware.usb.UsbManager\n"
+    "import android.hardware.usb.UsbConstants\n"
+    "import android.hardware.usb.UsbDeviceConnection\n"
+    "import java.io.IOException\n"
+)
+
+field_needle = '''    private var port: UsbSerialPort? = null
+    private var readThread: Thread? = null
+'''
+field_replacement = '''    private var port: UsbSerialPort? = null
+    private var usbConnection: UsbDeviceConnection? = null
+    private var connectedDevice: UsbDevice? = null
+    private var signalRts = false
+    private var signalDtr = false
+    private var readThread: Thread? = null
+'''
+if field_needle not in u:
+    raise SystemExit("UsbSerialManager field patch point not found")
+u = u.replace(field_needle, field_replacement)
+
+open_needle = '''        val connection = usbManager.openDevice(driver.device)
+            ?: return "error: cannot open device"
+
+        port = driver.ports[0]
+        try {
+            port!!.open(connection)
+            port!!.setParameters(BAUD_RATE, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
+            // pyserial (а значит и десктопный esptool) поднимает DTR/RTS при открытии
+            // порта, usb-serial-for-android оставляет обе линии в 0. Без этого
+            // ESP32-S3 USB-Serial/JTAG не разгребает OUT-endpoint и любая запись
+            // висит до таймаута (SerialTimeoutException, rc=-1) — sync не проходит
+            // никогда, ни в download mode, ни в обычном.
+            port!!.dtr = true
+            port!!.rts = true
+            Log.i(TAG, "initial signals dtr=${port!!.dtr} rts=${port!!.rts}")
+        } catch (e: Exception) {
+'''
+open_replacement = '''        val connection = usbManager.openDevice(driver.device)
+            ?: return "error: cannot open device"
+
+        usbConnection = connection
+        connectedDevice = device
+        signalRts = false
+        signalDtr = false
+        port = driver.ports[0]
+        try {
+            port!!.open(connection)
+            port!!.setParameters(BAUD_RATE, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
+
+            if (isCh9102(device)) {
+                // The physical NeuroWatch uses WCH CH9102 (1A86:55D4).
+                // Keep both lines deasserted after open. Reset will be issued
+                // atomically by setSignals(), avoiding the transient line state
+                // created by separate port.rts / port.dtr USB requests.
+                setSignals(0, 0)
+                Log.i(TAG, "CH9102 opened with atomic DTR/RTS, both deasserted")
+            } else {
+                // Preserve upstream behaviour for other bridges.
+                port!!.dtr = true
+                port!!.rts = true
+                signalDtr = true
+                signalRts = true
+                Log.i(TAG, "initial signals dtr=${port!!.dtr} rts=${port!!.rts}")
+            }
+        } catch (e: Exception) {
+'''
+if open_needle not in u:
+    raise SystemExit("UsbSerialManager open patch point not found")
+u = u.replace(open_needle, open_replacement)
+
+disconnect_needle = '''        try { port?.close() } catch (_: Exception) {}
+        port = null
+        synchronized(readLock) { readBuf.reset() }
+'''
+disconnect_replacement = '''        try { port?.close() } catch (_: Exception) {}
+        port = null
+        usbConnection = null
+        connectedDevice = null
+        signalRts = false
+        signalDtr = false
+        synchronized(readLock) { readBuf.reset() }
+'''
+if disconnect_needle not in u:
+    raise SystemExit("UsbSerialManager disconnect patch point not found")
+u = u.replace(disconnect_needle, disconnect_replacement)
+
+signals_needle = '''    fun setSignals(rts: Int, dtr: Int) {
+        try {
+            if (rts != -1) port?.rts = rts != 0
+            if (dtr != -1) port?.dtr = dtr != 0
+        } catch (e: Exception) { Log.e(TAG, "setSignals error", e) }
+    }
+'''
+signals_replacement = '''    private fun isCh9102(device: UsbDevice?): Boolean =
+        device?.vendorId == 0x1A86 && device.productId == 0x55D4
+
+    /**
+     * CH34x/CH9102 request 0xA4 updates both modem-control lines in one USB
+     * transaction. This is important on ESP32 auto-reset circuits: separate
+     * DTR and RTS requests create an intermediate state and can miss download
+     * mode on Android.
+     */
+    private fun setCh9102SignalsAtomic(rts: Boolean, dtr: Boolean) {
+        val conn = usbConnection ?: throw IOException("USB connection is closed")
+        val asserted = (if (dtr) 0x20 else 0) or (if (rts) 0x40 else 0)
+        val value = asserted.inv() and 0xFFFF
+        val requestType = UsbConstants.USB_TYPE_VENDOR or UsbConstants.USB_DIR_OUT
+        val rc = conn.controlTransfer(requestType, 0xA4, value, 0, null, 0, 1500)
+        if (rc < 0) throw IOException("CH9102 control-line request failed: rc=$rc")
+    }
+
+    fun setSignals(rts: Int, dtr: Int) {
+        try {
+            val nextRts = if (rts == -1) signalRts else rts != 0
+            val nextDtr = if (dtr == -1) signalDtr else dtr != 0
+
+            if (isCh9102(connectedDevice)) {
+                setCh9102SignalsAtomic(nextRts, nextDtr)
+            } else {
+                if (rts != -1) port?.rts = nextRts
+                if (dtr != -1) port?.dtr = nextDtr
+            }
+
+            signalRts = nextRts
+            signalDtr = nextDtr
+            Log.d(TAG, "signals rts=$signalRts dtr=$signalDtr atomic=${isCh9102(connectedDevice)}")
+        } catch (e: Exception) {
+            Log.e(TAG, "setSignals error", e)
+            throw e
+        }
+    }
+'''
+if signals_needle not in u:
+    raise SystemExit("UsbSerialManager signal patch point not found")
+u = u.replace(signals_needle, signals_replacement)
+
 usb_clear_needle = '''    fun readBufferedBase64(): String {
         synchronized(readLock) {
             if (readBuf.size() == 0) return ""
@@ -244,6 +384,15 @@ if usb_clear_needle not in u:
 u = u.replace(usb_clear_needle, usb_clear_replacement)
 usb.write_text(u)
 
+g = gradle.read_text()
+if "com.github.mik3y:usb-serial-for-android:3.7.3" not in g:
+    raise SystemExit("usb-serial dependency patch point not found")
+g = g.replace(
+    "com.github.mik3y:usb-serial-for-android:3.7.3",
+    "com.github.mik3y:usb-serial-for-android:3.11.0"
+)
+gradle.write_text(g)
+
 h = html.read_text()
 
 old_info = "  getInfo() { return { usbVendorId: 0x303A, usbProductId: 0x1001 }; }"
@@ -272,7 +421,8 @@ h = h.replace(
     "                          '<b>3.</b> Нажмите «Прошить»',",
     "instructionsEmbedded: '<b>1.</b> Подключите часы по USB OTG<br>' +\n"
     "                          '<b>2.</b> Нажмите «УСТАНОВИТЬ NEUROWATCH OS»<br>' +\n"
-    "                          '<b>3.</b> Приложение само проверит чип, сохранит заводскую Flash и только после подтверждения начнёт запись',"
+    "                          '<b>3.</b> Автовход в загрузчик → проверка железа → резервная копия OTA-разметки → запись в неактивный слот → MD5-проверка<br>' +\n"
+    "                          '<b>4.</b> Не отключайте кабель после финального подтверждения',"
 )
 
 
@@ -507,16 +657,23 @@ h = h.replace("    erase.disabled = false;", "    erase.disabled = true;")
 # write NeuroWatch OS into an inactive OTA app partition, then switch otadata.
 # Existing bootloader, partition table, and currently running app are preserved.
 safe_ota_helpers = r'''
-async function connectRomWithSignalSequence(name, steps, attempts = 2) {
+async function connectRomWithSignalSequence(name, steps, attempts = 6) {
   const serialPort = new AndroidSerialPort();
   const res = Android.connect();
   if (res !== 'ok') throw new Error(res);
-  log('USB-порт открыт; ROM probe: ' + name, 'info');
+  log('USB-порт открыт; atomic ROM reset: ' + name, 'info');
+
+  if (Android.clearInput) Android.clearInput();
+  Android.setSignals(0, 0);
+  await new Promise(r => setTimeout(r, 100));
 
   for (const [rts, dtr, delayMs] of steps) {
     Android.setSignals(rts, dtr);
     await new Promise(r => setTimeout(r, delayMs));
   }
+
+  if (Android.clearInput) Android.clearInput();
+  await new Promise(r => setTimeout(r, 120));
 
   const transport = new esptool.Transport(serialPort, false);
   const loader = new esptool.ESPLoader({ transport, baudrate: 115200, terminal });
@@ -537,22 +694,40 @@ async function openChipRom() {
   const pid = Android.usbProductId();
 
   if (vid === 0x1A86 && pid === 0x55D4) {
-    const sequences = [
-      ['CH9102 reset sequence A', [[1,0,120],[0,1,120],[0,0,160]]],
-      ['CH9102 reset sequence B', [[0,1,120],[1,0,120],[0,0,160]]],
-      ['CH9102 reset sequence C', [[1,1,120],[0,1,120],[0,0,160]]],
+    // Espressif classic sequence: D0/R1 -> D1/R0 -> D0/R0.
+    // On this CH9102 board the exact sequence worked previously but was
+    // intermittent when DTR/RTS were sent as two USB requests. v1.2 sends
+    // each pair atomically and retries with progressively longer settling.
+    const profiles = [
+      ['classic-fast',   [[1,0,100],[0,1,70],[0,0,260]]],
+      ['classic-normal', [[1,0,150],[0,1,100],[0,0,450]]],
+      ['classic-long',   [[1,0,250],[0,1,150],[0,0,800]]],
     ];
-    for (const [name, steps] of sequences) {
-      try {
-        return await connectRomWithSignalSequence(name, steps, 2);
-      } catch (e) {
-        log(name + ': ' + e.message, 'err');
-        try { Android.disconnect(); } catch(_) {}
-        await new Promise(r => setTimeout(r, 500));
+
+    let lastError = null;
+    for (let cycle = 1; cycle <= 3; cycle++) {
+      for (const [profile, steps] of profiles) {
+        const name = profile + ' ' + cycle + '/3';
+        try {
+          setProgress('Входим в загрузчик: ' + name, 2);
+          return await connectRomWithSignalSequence(name, steps, 7);
+        } catch (e) {
+          lastError = e;
+          log(name + ': ' + e.message, 'err');
+          try { Android.setSignals(0, 0); } catch(_) {}
+          try { Android.disconnect(); } catch(_) {}
+          await new Promise(r => setTimeout(r, 700 + cycle * 250));
+        }
       }
     }
+
+    throw new Error(
+      'Автовход в ROM bootloader не удался после 9 попыток. ' +
+      'CH9102 определён, Flash не изменялась. Последняя ошибка: ' +
+      (lastError ? lastError.message : 'unknown')
+    );
   }
-  throw new Error('Не удалось войти в ROM bootloader. Flash НЕ изменялась.');
+  throw new Error('Неподдерживаемый USB-UART для автоматической установки. Flash НЕ изменялась.');
 }
 
 function u16le(a, o) {
@@ -755,6 +930,24 @@ safe_do_flash = r'''async function doFlash() {
       throw new Error('Ожидалось 4MB Flash, найдено: ' + flashSize + '. Ничего не записано.');
     }
 
+    // ESP32 classic security eFuses. Refuse raw OTA writes if flash encryption
+    // or Secure Boot is enabled: this installer intentionally never modifies
+    // keys/fuses or tries to bypass platform security.
+    const efuse0 = (await session.loader.readReg(0x3FF5A000)) >>> 0;
+    const efuse6 = (await session.loader.readReg(0x3FF5A018)) >>> 0;
+    const flashCryptCnt = (efuse0 >>> 20) & 0x7F;
+    let cryptBits = 0;
+    for (let x = flashCryptCnt; x; x >>>= 1) cryptBits += x & 1;
+    const flashEncrypted = (cryptBits & 1) === 1;
+    const secureBoot = ((efuse6 >>> 4) & 0x3) !== 0;
+    log('Security: flashEncryption=' + flashEncrypted + ', secureBoot=' + secureBoot, 'info');
+    if (flashEncrypted || secureBoot) {
+      throw new Error(
+        'Обнаружена защищённая конфигурация ESP32 (Flash Encryption/Secure Boot). ' +
+        'Безопасная установка остановлена до записи.'
+      );
+    }
+
     const table = await readFlashSlowRom(session.loader, 0x8000, 0x1000, (done,total) => {
       setProgress('Таблица разделов: ' + Math.round(done*100/total) + '%', 3 + Math.round(done/total*7));
     });
@@ -777,6 +970,9 @@ safe_do_flash = r'''async function doFlash() {
     const choice = pickSafeOtaTarget(partsInfo, otadata);
     const app = b64ToBytes(Android.readAssetBase64('app.bin'));
     if (!app.length) throw new Error('В APK отсутствует app.bin');
+    if (app[0] !== 0xE9) {
+      throw new Error('Встроенный app.bin не похож на ESP32 application image. Запись отменена.');
+    }
     if (app.length > choice.target.size) {
       throw new Error(
         'NeuroWatch OS (' + app.length + ' B) не помещается в ' +
@@ -842,7 +1038,10 @@ safe_do_flash = r'''async function doFlash() {
     const copyStart = choice.writeCopy * 0x1000;
     const sector = otadata.slice(copyStart, copyStart + 0x1000);
     putU32le(sector, 0, choice.nextSeq);
-    // Preserve seq_label/state bytes; only seq+CRC are required for boot selection.
+    // Mark the target selectable regardless of stale INVALID/ABORTED state in
+    // the alternate metadata copy. UNDEFINED is bootable in ESP-IDF both with
+    // and without rollback support.
+    putU32le(sector, 24, 0xFFFFFFFF);
     const seqBytes = new Uint8Array(4);
     putU32le(seqBytes, 0, choice.nextSeq);
     putU32le(sector, 28, crc32SeedFFFFFFFF(seqBytes));
@@ -855,7 +1054,12 @@ safe_do_flash = r'''async function doFlash() {
     log('Заводское приложение осталось во Flash. Если новая система не запустится, её можно вернуть через USB.', 'info');
   } catch (e) {
     log('Ошибка: ' + e.message, 'err');
-    log('Если сообщение было до подтверждения записи — Flash не изменялась.', 'info');
+    log(
+      'Установщик остановился безопасно. Если переключение OTA не было завершено, ' +
+      'активной остаётся прежняя система. Повторный запуск приложения безопасен.',
+      'info'
+    );
+    setProgress('Остановлено безопасно', 0);
     console.error(e);
   } finally {
     try { await session?.serialPort.close(); } catch(_) {}
@@ -868,7 +1072,7 @@ h = h[:do_start] + safe_do_flash + h[do_end:]
 
 h = h.replace(
   'Приложение само проверит чип, сохранит заводскую Flash и только после подтверждения начнёт запись',
-  'Приложение прочитает заводскую OTA-разметку и установит NeuroWatch OS в неактивный слот, не перезаписывая текущую систему'
+  'Приложение автоматически войдёт в загрузчик, проверит железо и безопасность, сохранит OTA-разметку, запишет NeuroWatch OS в неактивный слот и проверит запись перед переключением'
 )
 
 # Final hardening: remove dead full-flash-backup flow from generated UI and
