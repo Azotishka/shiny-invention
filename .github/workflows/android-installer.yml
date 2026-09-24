@@ -1,0 +1,146 @@
+name: NeuroWatch Android Safe Installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - neurowatch-installer-android
+    paths:
+      - 'firmware/**'
+      - 'scripts/patch_neurowatch_installer.py'
+      - '.github/workflows/android-installer.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-installer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python tools required by ESP32 core
+        run: python -m pip install --disable-pip-version-check pyserial
+
+      - uses: arduino/setup-arduino-cli@v2
+
+      - name: Install pinned ESP32 core and Watchy libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          INDEX=https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index --additional-urls "$INDEX"
+          arduino-cli core install esp32:esp32@2.0.15 --additional-urls "$INDEX"
+          arduino-cli lib install 'Watchy@1.4.7'
+          arduino-cli lib install 'DS3232RTC@2.0.1'
+          arduino-cli lib install 'WiFiManager@2.0.17'
+
+      - name: Build NeuroWatch OS
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build installer-assets
+          arduino-cli compile \
+            --fqbn 'esp32:esp32:watchy:Revision=v20,PartitionScheme=min_spiffs' \
+            --build-path "$PWD/build" \
+            firmware/NeuroWatch_OS
+          python3 scripts/check_ota.py build/NeuroWatch_OS.ino.bin
+          cp build/NeuroWatch_OS.ino.bin installer-assets/app.bin
+          ls -lh installer-assets
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Prepare pinned Android flasher
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/drakosha/esp-flash-android.git android-installer
+          cd android-installer
+          git checkout c4036ace9d2f5526e3535d1ac8bfb8ac3bafc23d
+          cd ..
+          python3 scripts/patch_neurowatch_installer.py android-installer
+          cp installer-assets/app.bin android-installer/app/src/main/assets/
+          cat > android-installer/app/src/main/assets/firmware.json <<'JSON'
+          {
+            "name": "NeuroWatch OS",
+            "version": "v1.1 Final Safe OTA Installer",
+            "parts": [
+              { "file": "app.bin", "offset": "0x0" }
+            ]
+          }
+          JSON
+
+      - name: Bundle Espressif esptool-js 0.6.1
+        shell: bash
+        working-directory: android-installer
+        env:
+          ESPTOOL_VERSION: '0.6.1'
+        run: ./scripts/bundle-esptool.sh
+
+      - name: Verify final installer safety invariants
+        shell: bash
+        working-directory: android-installer
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          h = Path("app/src/main/assets/flash.html").read_text()
+          assert h.count("async function doFlash() {") == 1
+          assert "async function openChipRom()" in h
+          assert "ROM read flash block" in h
+          assert "flashMd5sum(choice.target.offset, app.length)" in h
+          assert "Bootloader, таблица разделов и текущая заводская прошивка НЕ будут перезаписаны." in h
+          assert "async function makeFactoryBackup(session)" not in h
+          assert "addEventListener('click', doErase)" not in h
+          s = h[h.index("<script>")+8:h.rindex("</script>")]
+          Path("/tmp/neurowatch-flash.js").write_text(s)
+          PY
+          node --check /tmp/neurowatch-flash.js
+          test -f app/src/main/assets/app.bin
+          test ! -f app/src/main/assets/bootloader.bin
+          test ! -f app/src/main/assets/partitions.bin
+          test ! -f app/src/main/assets/boot_app0.bin
+          grep -q '"file": "app.bin"' app/src/main/assets/firmware.json
+          ! grep -q 'bootloader.bin' app/src/main/assets/firmware.json
+
+      - name: Build installer APK
+        shell: bash
+        working-directory: android-installer
+        run: |
+          set -euo pipefail
+          gradle --no-daemon :app:assembleDebug \
+            -PappId=ru.neurogazette.neurowatchinstaller \
+            -PappLabel='NeuroWatch Installer' \
+            -PversionName=1.1 \
+            -PversionCode=11
+          mkdir -p ../release-installer
+          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Installer-v1.1.apk
+          (cd ../release-installer && sha256sum NeuroWatch-Installer-v1.1.apk > SHA256SUMS.txt)
+          printf '%s\n' \
+            'Final safe OTA installer for the detected ESP32-PICO-D4 / 4MB platform.' \
+            'It reads and backs up the factory partition table + OTA metadata, writes only an inactive OTA app slot, verifies the written app by MD5, then switches OTA boot metadata.' \
+            'It does NOT package or overwrite the bootloader or partition table, and destructive full-flash erase is disabled in the UI.' \
+            'If any validation, read, write, or MD5 verification fails, the existing active system remains selected.' \
+            > ../release-installer/READ_FIRST.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeuroWatch-Installer-Android-v1.1
+          path: release-installer/
+          if-no-files-found: error
