@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - neurowatch-installer-v13
+      - neurowatch-installer-v14
     paths:
       - 'firmware/**'
       - 'scripts/patch_neurowatch_installer.py'
@@ -83,7 +83,7 @@ jobs:
           cat > android-installer/app/src/main/assets/firmware.json <<'JSON'
           {
             "name": "NeuroWatch OS",
-            "version": "v1.3 ROM Protocol Fix",
+            "version": "v1.4 USB Recovery",
             "parts": [
               { "file": "app.bin", "offset": "0x0" }
             ]
@@ -118,6 +118,7 @@ jobs:
           assert "async function attachEsp32FlashRom(loader)" in h
           assert "ROM SPI attach (8-byte ESP32 packet)" in h
           assert "new Uint8Array([0, 0, 0, 0])" in h
+          assert "setInterval(__refreshNeuroWatchUsb, 1200)" in h
           # The safe ROM path must not use esptool-js 0.6.1's 4-byte flashSpiAttach helper.
           safe = h[h.index("async function connectRomWithSignalSequence"):h.index("// ─── Прошивка")]
           assert ".flashSpiAttach(0)" not in safe
@@ -129,6 +130,9 @@ jobs:
           assert "controlTransfer(requestType, 0xA4" in usb
           assert "device?.vendorId == 0x1A86 && device.productId == 0x55D4" in usb
           assert "driverName.contains(\"CdcAcm\"" in usb
+          assert "it.vendorId == 0x1A86 && it.productId == 0x55D4" in usb
+          assert "serialDriverFor(device)" in usb
+          assert "CdcAcmSerialDriver::class.java" in usb
 
           gradle = Path("app/build.gradle").read_text()
           assert "usb-serial-for-android:3.7.3" in gradle
@@ -159,14 +163,14 @@ jobs:
           gradle --no-daemon :app:assembleDebug \
             -PappId=ru.neurogazette.neurowatchinstaller \
             -PappLabel='NeuroWatch Installer' \
-            -PversionName=1.3 \
-            -PversionCode=13
+            -PversionName=1.4 \
+            -PversionCode=14
           mkdir -p ../release-installer
-          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Installer-v1.3.apk
-          (cd ../release-installer && sha256sum NeuroWatch-Installer-v1.3.apk > SHA256SUMS.txt)
+          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Installer-v1.4.apk
+          (cd ../release-installer && sha256sum NeuroWatch-Installer-v1.4.apk > SHA256SUMS.txt)
           printf '%s\n' \
-            'NeuroWatch Installer v1.3 for the detected ESP32-PICO-D4 / 4MB + CH9102 platform.' \
-            'CH9102 DTR/RTS are driven atomically; classic ESP32 ROM SPI_ATTACH uses the correct 8-byte payload required by the Espressif ROM protocol.' \
+            'NeuroWatch Installer v1.4 for the detected ESP32-PICO-D4 / 4MB + CH9102 platform.' \
+            'CH9102 is detected directly from Android UsbManager even if the serial library misses it; the UI continuously rescans USB and uses an explicit CDC fallback driver for 1A86:55D4.' \
             'It validates security eFuses, backs up partition table + OTA metadata, writes only an inactive OTA app slot, verifies it by MD5, then switches OTA metadata.' \
             'It does NOT package or overwrite the bootloader or partition table, and destructive full-flash erase is disabled in the UI.' \
             'If preflight, read, write, or MD5 verification fails before OTA switch, the existing active system remains selected.' \
@@ -174,6 +178,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NeuroWatch-Installer-Android-v1.3
+          name: NeuroWatch-Installer-Android-v1.4
           path: release-installer/
           if-no-files-found: error
