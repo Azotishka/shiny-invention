@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - neurowatch-installer-android
+      - neurowatch-installer-v12
     paths:
       - 'firmware/**'
       - 'scripts/patch_neurowatch_installer.py'
@@ -79,7 +79,7 @@ jobs:
           cat > android-installer/app/src/main/assets/firmware.json <<'JSON'
           {
             "name": "NeuroWatch OS",
-            "version": "v1.1 Final Safe OTA Installer",
+            "version": "v1.2 Hardened Safe OTA Installer",
             "parts": [
               { "file": "app.bin", "offset": "0x0" }
             ]
@@ -108,6 +108,18 @@ jobs:
           assert "Bootloader, таблица разделов и текущая заводская прошивка НЕ будут перезаписаны." in h
           assert "async function makeFactoryBackup(session)" not in h
           assert "addEventListener('click', doErase)" not in h
+          assert "Автовход в ROM bootloader не удался после 9 попыток" in h
+          assert "0x3FF5A000" in h and "0x3FF5A018" in h
+          assert "putU32le(sector, 24, 0xFFFFFFFF)" in h
+
+          usb = Path("app/src/main/java/io/github/drakosha/espflash/UsbSerialManager.kt").read_text()
+          assert "setCh9102SignalsAtomic" in usb
+          assert "controlTransfer(requestType, 0xA4" in usb
+          assert "device?.vendorId == 0x1A86 && device.productId == 0x55D4" in usb
+
+          gradle = Path("app/build.gradle").read_text()
+          assert "usb-serial-for-android:3.11.0" in gradle
+
           s = h[h.index("<script>")+8:h.rindex("</script>")]
           Path("/tmp/neurowatch-flash.js").write_text(s)
           PY
@@ -127,20 +139,21 @@ jobs:
           gradle --no-daemon :app:assembleDebug \
             -PappId=ru.neurogazette.neurowatchinstaller \
             -PappLabel='NeuroWatch Installer' \
-            -PversionName=1.1 \
-            -PversionCode=11
+            -PversionName=1.2 \
+            -PversionCode=12
           mkdir -p ../release-installer
-          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Installer-v1.1.apk
-          (cd ../release-installer && sha256sum NeuroWatch-Installer-v1.1.apk > SHA256SUMS.txt)
+          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Installer-v1.2.apk
+          (cd ../release-installer && sha256sum NeuroWatch-Installer-v1.2.apk > SHA256SUMS.txt)
           printf '%s\n' \
-            'Final safe OTA installer for the detected ESP32-PICO-D4 / 4MB platform.' \
-            'It reads and backs up the factory partition table + OTA metadata, writes only an inactive OTA app slot, verifies the written app by MD5, then switches OTA boot metadata.' \
+            'NeuroWatch Installer v1.2 for the detected ESP32-PICO-D4 / 4MB + CH9102 platform.' \
+            'CH9102 DTR/RTS are driven atomically in a single USB request and bootloader entry is retried automatically with conservative timings.' \
+            'It validates security eFuses, backs up partition table + OTA metadata, writes only an inactive OTA app slot, verifies it by MD5, then switches OTA metadata.' \
             'It does NOT package or overwrite the bootloader or partition table, and destructive full-flash erase is disabled in the UI.' \
-            'If any validation, read, write, or MD5 verification fails, the existing active system remains selected.' \
+            'If preflight, read, write, or MD5 verification fails before OTA switch, the existing active system remains selected.' \
             > ../release-installer/READ_FIRST.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NeuroWatch-Installer-Android-v1.1
+          name: NeuroWatch-Installer-Android-v1.2
           path: release-installer/
           if-no-files-found: error
