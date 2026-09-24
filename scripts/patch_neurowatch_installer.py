@@ -733,6 +733,28 @@ async function openChipRom() {
   const pid = Android.usbProductId();
 
   if (vid === 0x1A86 && pid === 0x55D4) {
+    // First try the current state without a reset. This recovers cleanly if a
+    // previous attempt already left the ESP32 in ROM download mode.
+    try {
+      setProgress('Проверяем текущий режим ESP32…', 1);
+      const serialPort = new AndroidSerialPort();
+      const res = Android.connect();
+      if (res !== 'ok') throw new Error(res);
+      if (Android.clearInput) Android.clearInput();
+      const transport = new esptool.Transport(serialPort, false);
+      const loader = new esptool.ESPLoader({ transport, baudrate: 115200, terminal });
+      await loader.connect('no_reset', 3);
+      const chip = await loader.chip.getChipDescription(loader);
+      if (loader.chip.postConnect) await loader.chip.postConnect(loader);
+      try { await loader.flashSpiAttach(0); } catch (_) {}
+      log('ESP32 уже был доступен в ROM bootloader.', 'ok');
+      return { loader, serialPort, chip };
+    } catch (e) {
+      log('Текущий режим не bootloader — выполняю автоматический reset.', 'info');
+      try { Android.disconnect(); } catch(_) {}
+      await new Promise(r => setTimeout(r, 400));
+    }
+
     // Espressif classic sequence: D0/R1 -> D1/R0 -> D0/R0.
     // On this CH9102 board the exact sequence worked previously but was
     // intermittent when DTR/RTS were sent as two USB requests. v1.2 sends
