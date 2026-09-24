@@ -113,9 +113,12 @@ jobs:
           assert "putU32le(sector, 24, 0xFFFFFFFF)" in h
 
           usb = Path("app/src/main/java/io/github/drakosha/espflash/UsbSerialManager.kt").read_text()
-          assert "setCh9102SignalsAtomic" in usb
+          assert "setBridgeSignalsAtomic" in usb
+          assert "controlTransfer(" in usb
+          assert "requestType, 0x22" in usb
           assert "controlTransfer(requestType, 0xA4" in usb
           assert "device?.vendorId == 0x1A86 && device.productId == 0x55D4" in usb
+          assert "driverName.contains(\"CdcAcm\"" in usb
 
           gradle = Path("app/build.gradle").read_text()
           assert "usb-serial-for-android:3.11.0" in gradle
