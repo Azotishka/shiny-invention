@@ -36,6 +36,17 @@ check_conn_replacement = '''    @JavascriptInterface
 
     @JavascriptInterface
     fun usbDiagnostics(): String = usbManager.diagnosticsJson()
+
+    @JavascriptInterface
+    fun copyText(label: String, text: String): String {
+        return try {
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
+            "ok"
+        } catch (e: Exception) {
+            "error: ${e.message}"
+        }
+    }
 '''
 if check_conn_needle not in s:
     raise SystemExit("JsBridge checkConnection patch point not found")
@@ -45,6 +56,8 @@ s = s.replace(
     "import android.content.Context\n",
     "import android.content.Context\n"
     "import android.content.ContentValues\n"
+    "import android.content.ClipData\n"
+    "import android.content.ClipboardManager\n"
     "import android.os.Build\n"
     "import android.os.Environment\n"
     "import android.provider.MediaStore\n"
@@ -1484,6 +1497,7 @@ h = h.replace(
     <button class="secondary" id="usbPermissionBtn" style="margin:0;flex:1">РАЗРЕШИТЬ USB</button>
   </div>
   <button class="secondary" id="preflightBtn" style="margin-top:8px">ПРОВЕРИТЬ ЧАСЫ БЕЗ ЗАПИСИ</button>
+  <button class="secondary" id="copyDiagBtn" style="margin-top:8px">СКОПИРОВАТЬ ДИАГНОСТИКУ</button>
 </div>
 
 <div class="card">
@@ -1550,6 +1564,17 @@ document.getElementById('usbPermissionBtn').addEventListener('click', () => {
   }
 });
 document.getElementById('preflightBtn').addEventListener('click', doReadOnlyPreflight);
+document.getElementById('copyDiagBtn').addEventListener('click', () => {
+  try {
+    const usb = Android.usbDiagnostics();
+    const visibleLog = document.getElementById('log')?.innerText || '';
+    const text = 'NeuroWatch Manager v2.0\nUSB=' + usb + '\n\nLOG:\n' + visibleLog;
+    const r = Android.copyText('NeuroWatch diagnostics', text);
+    log(r === 'ok' ? 'Диагностика скопирована в буфер обмена.' : String(r), r === 'ok' ? 'ok' : 'err');
+  } catch (e) {
+    log('Не удалось скопировать диагностику: ' + e.message, 'err');
+  }
+});
 setInterval(neuroWatchUsbDiagnostics, 1500);
 setTimeout(neuroWatchUsbDiagnostics, 100);
 '''
