@@ -1529,6 +1529,8 @@ function neuroWatchUsbDiagnostics() {
         ? 'Часы CH9102 не найдены. Android видит: ' + all
         : 'Android не видит USB-устройств. Проверь OTG, кабель и питание.';
       flash.disabled = true;
+      pre.disabled = true;
+      window.__preflightPassed = false;
       return d;
     }
     const driver = watch.selectedDriver || watch.defaultDriver || 'нет serial-драйвера';
@@ -1579,9 +1581,6 @@ setInterval(neuroWatchUsbDiagnostics, 1500);
 setTimeout(neuroWatchUsbDiagnostics, 100);
 '''
 
-insert_before = "html.write_text(h)"
-if insert_before not in h:
-    raise SystemExit("HTML write marker missing")
 script_close = h.rfind("</script>")
 if script_close < 0:
     raise SystemExit("flash.html script close not found")
