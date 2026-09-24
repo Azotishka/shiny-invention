@@ -197,7 +197,7 @@ bridge_clear_needle = '''    @JavascriptInterface
     fun readData(): String = usbManager.readBufferedBase64()
 
     @JavascriptInterface
-    fun setSignals(rts: Int, dtr: Int): String = usbManager.setSignals(rts, dtr)
+    fun setSignals(rts: Int, dtr: Int) = usbManager.setSignals(rts, dtr)
 '''
 bridge_clear_replacement = '''    @JavascriptInterface
     fun readData(): String = usbManager.readBufferedBase64()
@@ -206,7 +206,7 @@ bridge_clear_replacement = '''    @JavascriptInterface
     fun clearInput() = usbManager.clearBufferedInput()
 
     @JavascriptInterface
-    fun setSignals(rts: Int, dtr: Int) = usbManager.setSignals(rts, dtr)
+    fun setSignals(rts: Int, dtr: Int): String = usbManager.setSignals(rts, dtr)
 '''
 if bridge_clear_needle not in s:
     raise SystemExit("JsBridge clearInput patch point not found")
