@@ -16,6 +16,7 @@ s = s.replace(
     "import android.os.Environment\n"
     "import android.provider.MediaStore\n"
     "import java.io.File\n"
+    "import java.security.MessageDigest\n"
 )
 
 needle = '''    @JavascriptInterface
@@ -38,6 +39,25 @@ replacement = '''    @JavascriptInterface
 
     @JavascriptInterface
     fun usbProductId(): Int = usbManager.findDevice()?.productId ?: 0
+
+    @JavascriptInterface
+    fun assetMd5(name: String): String {
+        return try {
+            val md = MessageDigest.getInstance("MD5")
+            context.assets.open(name).use { input ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    md.update(buf, 0, n)
+                }
+            }
+            md.digest().joinToString("") { "%02x".format(it) }
+        } catch (e: Exception) {
+            Log.e(TAG, "assetMd5 failed: $name", e)
+            ""
+        }
+    }
 
     private var backupUri: Uri? = null
     private var backupStream: java.io.OutputStream? = null
@@ -799,9 +819,24 @@ safe_do_flash = r'''async function doFlash() {
       [{ data: app, address: choice.target.offset, label: targetText }],
       (idx, written, total) => {
         const pct = total ? Math.round(written * 100 / total) : 100;
-        setProgress(targetText + ': ' + pct + '%', 25 + Math.round(pct * 0.60));
+        setProgress(targetText + ': ' + pct + '%', 25 + Math.round(pct * 0.55));
       }
     );
+
+    // Verify the inactive slot BEFORE switching boot selection. If verification
+    // fails, the factory/current app remains selected and still boots normally.
+    setProgress('Проверяем записанную систему…', 82);
+    const expectedMd5 = String(Android.assetMd5('app.bin') || '').toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(expectedMd5)) {
+      throw new Error('Не удалось вычислить MD5 встроенной прошивки. OTA не переключена.');
+    }
+    const flashMd5 = String(await session.loader.flashMd5sum(choice.target.offset, app.length)).toLowerCase();
+    log('MD5 app.bin: ' + expectedMd5, 'info');
+    log('MD5 Flash:   ' + flashMd5, 'info');
+    if (flashMd5 !== expectedMd5) {
+      throw new Error('Проверка записи не пройдена: MD5 не совпадает. Текущая система остаётся активной.');
+    }
+    log('Проверка записи пройдена.', 'ok');
 
     // Prepare only the alternate 4K otadata sector, preserving the other copy.
     const copyStart = choice.writeCopy * 0x1000;
@@ -812,7 +847,7 @@ safe_do_flash = r'''async function doFlash() {
     putU32le(seqBytes, 0, choice.nextSeq);
     putU32le(sector, 28, crc32SeedFFFFFFFF(seqBytes));
 
-    setProgress('Переключаем загрузку на NeuroWatch OS…', 90);
+    setProgress('Переключаем загрузку на NeuroWatch OS…', 92);
     await writeExact4kSector(session.loader, otadataPart.offset + copyStart, sector);
 
     setProgress('Готово — часы перезагружаются', 100);
