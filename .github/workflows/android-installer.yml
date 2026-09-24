@@ -152,7 +152,9 @@ jobs:
           assert "fun usbDiagnostics(): String" in bridge
           assert "fun copyText(label: String, text: String): String" in bridge
           # v2 polling must not spam Android permission dialogs.
-          cc = bridge[bridge.index("fun checkConnection(): String"):bridge.index("/** Человекочитаемое", bridge.index("fun checkConnection(): String"))]
+          cc_start = bridge.index("fun checkConnection(): String")
+          cc_end = bridge.index("\n    @JavascriptInterface", cc_start)
+          cc = bridge[cc_start:cc_end]
           assert "requestPermission" not in cc
 
           gradle = Path("app/build.gradle").read_text()
