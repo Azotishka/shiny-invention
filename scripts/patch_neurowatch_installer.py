@@ -215,12 +215,59 @@ js.write_text(s)
 
 u = usb.read_text()
 
+find_needle = '''    /** Первое подключённое устройство, для которого есть serial-драйвер. */
+    fun findDevice(): UsbDevice? {
+        val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+        val prober = UsbSerialProber.getDefaultProber()
+        return usbManager.deviceList.values.find { prober.probeDevice(it) != null }
+    }
+'''
+find_replacement = '''    /**
+     * Prefer the exact CH9102 used by this watch even if the serial library
+     * temporarily fails to classify it. Android UsbManager enumeration does
+     * not require opening the device or USB permission.
+     */
+    fun findDevice(): UsbDevice? {
+        val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+        val devices = usbManager.deviceList.values
+        devices.firstOrNull { it.vendorId == 0x1A86 && it.productId == 0x55D4 }?.let { return it }
+        val prober = UsbSerialProber.getDefaultProber()
+        return devices.firstOrNull { prober.probeDevice(it) != null }
+    }
+
+    private fun serialDriverFor(device: UsbDevice): com.hoho.android.usbserial.driver.UsbSerialDriver? {
+        UsbSerialProber.getDefaultProber().probeDevice(device)?.let { return it }
+        if (device.vendorId == 0x1A86 && device.productId == 0x55D4) {
+            val table = ProbeTable().addProduct(
+                0x1A86, 0x55D4, CdcAcmSerialDriver::class.java
+            )
+            return UsbSerialProber(table).probeDevice(device)
+        }
+        return null
+    }
+'''
+if find_needle not in u:
+    raise SystemExit("UsbSerialManager findDevice patch point not found")
+u = u.replace(find_needle, find_replacement)
+
+driver_needle = '''        val driver = UsbSerialProber.getDefaultProber().probeDevice(device)
+            ?: return "error: no driver for device"
+'''
+driver_replacement = '''        val driver = serialDriverFor(device)
+            ?: return "error: CH9102 detected but no compatible serial driver"
+'''
+if driver_needle not in u:
+    raise SystemExit("UsbSerialManager driver patch point not found")
+u = u.replace(driver_needle, driver_replacement)
+
 u = u.replace(
     "import android.hardware.usb.UsbManager\n",
     "import android.hardware.usb.UsbManager\n"
     "import android.hardware.usb.UsbConstants\n"
     "import android.hardware.usb.UsbDeviceConnection\n"
     "import java.io.IOException\n"
+    "import com.hoho.android.usbserial.driver.CdcAcmSerialDriver\n"
+    "import com.hoho.android.usbserial.driver.ProbeTable\n"
 )
 
 field_needle = '''    private var port: UsbSerialPort? = null
@@ -1214,6 +1261,33 @@ h = h.replace(
     "document.getElementById('eraseBtn').addEventListener('click', doErase);",
     "document.getElementById('eraseBtn').style.display = 'none';"
 )
+
+usb_poll_marker = """if (typeof Android !== 'undefined' && Android.checkConnection) {
+  if (Android.checkConnection() === 'connected') window.__usbEvent('connected');
+}
+"""
+usb_poll_replacement = """function __refreshNeuroWatchUsb() {
+  if (typeof Android === 'undefined' || !Android.checkConnection) return;
+  const state = Android.checkConnection();
+  const dot = document.getElementById('usbDot');
+  const status = document.getElementById('usbStatus');
+  const flash = document.getElementById('flashBtn');
+  if (state === 'connected') {
+    if (!dot.className.includes('connected')) window.__usbEvent('connected');
+  } else if (state === 'none') {
+    if (!dot.className.includes('connected')) {
+      dot.className = 'dot';
+      status.textContent = t().usbNone;
+      flash.disabled = true;
+    }
+  }
+}
+__refreshNeuroWatchUsb();
+setInterval(__refreshNeuroWatchUsb, 1200);
+"""
+if usb_poll_marker not in h:
+    raise SystemExit("USB startup poll patch point not found")
+h = h.replace(usb_poll_marker, usb_poll_replacement)
 
 html.write_text(h)
 print("patched Android flasher for NeuroWatch safe-install flow")
