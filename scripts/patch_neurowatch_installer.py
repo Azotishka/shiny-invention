@@ -857,6 +857,32 @@ function parsePartitionTable(data) {
   return parts;
 }
 
+function validatePartitionLayout(parts, flashBytes = 0x400000) {
+  if (!parts.length) throw new Error('Таблица разделов пуста.');
+  const ranges = [];
+  for (const p of parts) {
+    const end = p.offset + p.size;
+    if (!p.size || p.offset < 0x9000 || end <= p.offset || end > flashBytes) {
+      throw new Error(
+        'Некорректный раздел ' + (p.label || '?') +
+        ': @0x' + p.offset.toString(16) + ' size=0x' + p.size.toString(16)
+      );
+    }
+    if (p.type === 0x00 && (p.offset & 0xFFFF) !== 0) {
+      throw new Error('APP-раздел ' + (p.label || '?') + ' не выровнен по 64KB.');
+    }
+    ranges.push({start:p.offset, end, label:p.label || '?'});
+  }
+  ranges.sort((a,b) => a.start - b.start);
+  for (let i = 1; i < ranges.length; i++) {
+    if (ranges[i].start < ranges[i-1].end) {
+      throw new Error(
+        'Разделы Flash перекрываются: ' + ranges[i-1].label + ' / ' + ranges[i].label
+      );
+    }
+  }
+}
+
 function crc32SeedFFFFFFFF(bytes) {
   if (!window.__crc32Table) {
     const table = new Uint32Array(256);
@@ -1026,7 +1052,8 @@ safe_do_flash = r'''async function doFlash() {
       setProgress('Таблица разделов: ' + Math.round(done*100/total) + '%', 3 + Math.round(done/total*7));
     });
     const partsInfo = parsePartitionTable(table);
-    log('Разделов найдено: ' + partsInfo.length, 'info');
+    validatePartitionLayout(partsInfo, 0x400000);
+    log('Разделов найдено и проверено: ' + partsInfo.length, 'info');
     for (const p of partsInfo) {
       log('  ' + p.label + ' type=' + p.type + ' sub=0x' + p.subtype.toString(16) +
           ' @0x' + p.offset.toString(16) + ' size=0x' + p.size.toString(16));
