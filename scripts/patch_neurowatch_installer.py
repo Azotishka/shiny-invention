@@ -231,6 +231,8 @@ field_replacement = '''    private var port: UsbSerialPort? = null
     private var connectedDevice: UsbDevice? = null
     private var signalRts = false
     private var signalDtr = false
+    private var atomicControlMode = 0 // 0=generic, 1=CDC ACM, 2=CH34x vendor
+    private var cdcControlInterfaceId = 0
     private var readThread: Thread? = null
 '''
 if field_needle not in u:
@@ -261,6 +263,23 @@ open_replacement = '''        val connection = usbManager.openDevice(driver.devi
         connectedDevice = device
         signalRts = false
         signalDtr = false
+        val driverName = driver.javaClass.simpleName
+        atomicControlMode = when {
+            driverName.contains("CdcAcm", ignoreCase = true) -> 1
+            driverName.contains("Ch34", ignoreCase = true) -> 2
+            else -> 0
+        }
+        cdcControlInterfaceId = 0
+        if (atomicControlMode == 1) {
+            for (i in 0 until device.interfaceCount) {
+                val iface = device.getInterface(i)
+                if (iface.interfaceClass == UsbConstants.USB_CLASS_COMM && iface.interfaceSubclass == 2) {
+                    cdcControlInterfaceId = iface.id
+                    break
+                }
+            }
+        }
+        Log.i(TAG, "driver=$driverName atomicMode=$atomicControlMode cdcIf=$cdcControlInterfaceId")
         port = driver.ports[0]
         try {
             port!!.open(connection)
@@ -297,6 +316,8 @@ disconnect_replacement = '''        try { port?.close() } catch (_: Exception) {
         connectedDevice = null
         signalRts = false
         signalDtr = false
+        atomicControlMode = 0
+        cdcControlInterfaceId = 0
         synchronized(readLock) { readBuf.reset() }
 '''
 if disconnect_needle not in u:
@@ -314,18 +335,33 @@ signals_replacement = '''    private fun isCh9102(device: UsbDevice?): Boolean =
         device?.vendorId == 0x1A86 && device.productId == 0x55D4
 
     /**
-     * CH34x/CH9102 request 0xA4 updates both modem-control lines in one USB
-     * transaction. This is important on ESP32 auto-reset circuits: separate
-     * DTR and RTS requests create an intermediate state and can miss download
-     * mode on Android.
+     * Update DTR and RTS in ONE USB control transfer. The physical 1A86:55D4
+     * device enumerates as CDC ACM on Android (USB class 2, two interfaces),
+     * but some CH9102 variants can use the WCH vendor driver. Support both.
+     *
+     * CDC ACM: SET_CONTROL_LINE_STATE (0x22), value bit0=DTR bit1=RTS.
+     * CH34x:   vendor request 0xA4, active-low SCL_DTR/SCL_RTS bits.
      */
-    private fun setCh9102SignalsAtomic(rts: Boolean, dtr: Boolean) {
+    private fun setBridgeSignalsAtomic(rts: Boolean, dtr: Boolean) {
         val conn = usbConnection ?: throw IOException("USB connection is closed")
-        val asserted = (if (dtr) 0x20 else 0) or (if (rts) 0x40 else 0)
-        val value = asserted.inv() and 0xFFFF
-        val requestType = UsbConstants.USB_TYPE_VENDOR or UsbConstants.USB_DIR_OUT
-        val rc = conn.controlTransfer(requestType, 0xA4, value, 0, null, 0, 1500)
-        if (rc < 0) throw IOException("CH9102 control-line request failed: rc=$rc")
+        val rc = when (atomicControlMode) {
+            1 -> {
+                val requestType = UsbConstants.USB_DIR_OUT or UsbConstants.USB_TYPE_CLASS or 0x01
+                val value = (if (dtr) 0x01 else 0) or (if (rts) 0x02 else 0)
+                conn.controlTransfer(
+                    requestType, 0x22, value, cdcControlInterfaceId,
+                    null, 0, 1500
+                )
+            }
+            2 -> {
+                val asserted = (if (dtr) 0x20 else 0) or (if (rts) 0x40 else 0)
+                val value = asserted.inv() and 0xFFFF
+                val requestType = UsbConstants.USB_TYPE_VENDOR or UsbConstants.USB_DIR_OUT
+                conn.controlTransfer(requestType, 0xA4, value, 0, null, 0, 1500)
+            }
+            else -> throw IOException("No atomic control-line transport for this driver")
+        }
+        if (rc < 0) throw IOException("atomic DTR/RTS request failed: rc=$rc mode=$atomicControlMode")
     }
 
     fun setSignals(rts: Int, dtr: Int): String {
@@ -333,8 +369,8 @@ signals_replacement = '''    private fun isCh9102(device: UsbDevice?): Boolean =
             val nextRts = if (rts == -1) signalRts else rts != 0
             val nextDtr = if (dtr == -1) signalDtr else dtr != 0
 
-            if (isCh9102(connectedDevice)) {
-                setCh9102SignalsAtomic(nextRts, nextDtr)
+            if (isCh9102(connectedDevice) && atomicControlMode != 0) {
+                setBridgeSignalsAtomic(nextRts, nextDtr)
             } else {
                 if (rts != -1) port?.rts = nextRts
                 if (dtr != -1) port?.dtr = nextDtr
@@ -342,7 +378,7 @@ signals_replacement = '''    private fun isCh9102(device: UsbDevice?): Boolean =
 
             signalRts = nextRts
             signalDtr = nextDtr
-            Log.d(TAG, "signals rts=$signalRts dtr=$signalDtr atomic=${isCh9102(connectedDevice)}")
+            Log.d(TAG, "signals rts=$signalRts dtr=$signalDtr mode=$atomicControlMode")
             "ok"
         } catch (e: Exception) {
             Log.e(TAG, "setSignals error", e)
@@ -662,7 +698,7 @@ async function connectRomWithSignalSequence(name, steps, attempts = 6) {
   const serialPort = new AndroidSerialPort();
   const res = Android.connect();
   if (res !== 'ok') throw new Error(res);
-  log('USB-порт открыт; atomic ROM reset: ' + name, 'info');
+  log('USB-порт открыт; atomic DTR/RTS ROM reset: ' + name, 'info');
 
   if (Android.clearInput) Android.clearInput();
   let signalResult = Android.setSignals(0, 0);
