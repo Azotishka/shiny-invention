@@ -9,10 +9,55 @@ html = root / "app/src/main/assets/flash.html"
 
 s = js.read_text()
 
+check_conn_needle = '''    @JavascriptInterface
+    fun checkConnection(): String {
+        val device = usbManager.findDevice() ?: return "none"
+        return if (usbManager.hasPermission(device)) {
+            "connected"
+        } else {
+            usbManager.requestPermission(device)
+            "pending"
+        }
+    }
+'''
+check_conn_replacement = '''    @JavascriptInterface
+    fun checkConnection(): String {
+        val device = usbManager.findDevice() ?: return "none"
+        return if (usbManager.hasPermission(device)) "connected" else "permission"
+    }
+
+    @JavascriptInterface
+    fun requestUsbPermission(): String {
+        val device = usbManager.findDevice() ?: return "none"
+        if (usbManager.hasPermission(device)) return "connected"
+        usbManager.requestPermission(device)
+        return "requested"
+    }
+
+    @JavascriptInterface
+    fun usbDiagnostics(): String = usbManager.diagnosticsJson()
+
+    @JavascriptInterface
+    fun copyText(label: String, text: String): String {
+        return try {
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
+            "ok"
+        } catch (e: Exception) {
+            "error: ${e.message}"
+        }
+    }
+'''
+if check_conn_needle not in s:
+    raise SystemExit("JsBridge checkConnection patch point not found")
+s = s.replace(check_conn_needle, check_conn_replacement)
+
 s = s.replace(
     "import android.content.Context\n",
     "import android.content.Context\n"
     "import android.content.ContentValues\n"
+    "import android.content.ClipData\n"
+    "import android.content.ClipboardManager\n"
     "import android.os.Build\n"
     "import android.os.Environment\n"
     "import android.provider.MediaStore\n"
@@ -245,10 +290,66 @@ find_replacement = '''    /**
         }
         return null
     }
+
+    fun diagnosticsJson(): String {
+        val manager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+        val root = JSONObject()
+        root.put("usbHost", context.packageManager.hasSystemFeature("android.hardware.usb.host"))
+        val arr = JSONArray()
+        manager.deviceList.values.forEach { d ->
+            val item = JSONObject()
+            item.put("path", d.deviceName)
+            item.put("vid", d.vendorId)
+            item.put("pid", d.productId)
+            item.put("deviceClass", d.deviceClass)
+            item.put("interfaces", d.interfaceCount)
+            item.put("permission", manager.hasPermission(d))
+            item.put("neuroWatch", d.vendorId == 0x1A86 && d.productId == 0x55D4)
+            val defaultDriver = try {
+                UsbSerialProber.getDefaultProber().probeDevice(d)?.javaClass?.simpleName ?: ""
+            } catch (_: Exception) { "" }
+            item.put("defaultDriver", defaultDriver)
+            val selectedDriver = try { serialDriverFor(d)?.javaClass?.simpleName ?: "" }
+                catch (_: Exception) { "" }
+            item.put("selectedDriver", selectedDriver)
+            try { item.put("product", d.productName ?: "") } catch (_: Exception) { item.put("product", "") }
+            arr.put(item)
+        }
+        root.put("count", arr.length())
+        root.put("devices", arr)
+        return root.toString()
+    }
+
+    private fun closeTransport() {
+        running = false
+        try { readThread?.interrupt() } catch (_: Exception) {}
+        readThread = null
+        try { port?.close() } catch (_: Exception) {}
+        port = null
+        try { usbConnection?.close() } catch (_: Exception) {}
+        usbConnection = null
+        connectedDevice = null
+        signalRts = false
+        signalDtr = false
+        atomicControlMode = 0
+        cdcControlInterfaceId = 0
+        synchronized(readLock) { readBuf.reset() }
+    }
 '''
 if find_needle not in u:
     raise SystemExit("UsbSerialManager findDevice patch point not found")
 u = u.replace(find_needle, find_replacement)
+
+connect_start_needle = '''    fun connect(): String {
+        val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+'''
+connect_start_replacement = '''    fun connect(): String {
+        closeTransport()
+        val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+'''
+if connect_start_needle not in u:
+    raise SystemExit("UsbSerialManager connect start patch point not found")
+u = u.replace(connect_start_needle, connect_start_replacement)
 
 driver_needle = '''        val driver = UsbSerialProber.getDefaultProber().probeDevice(device)
             ?: return "error: no driver for device"
@@ -268,6 +369,8 @@ u = u.replace(
     "import java.io.IOException\n"
     "import com.hoho.android.usbserial.driver.CdcAcmSerialDriver\n"
     "import com.hoho.android.usbserial.driver.ProbeTable\n"
+    "import org.json.JSONArray\n"
+    "import org.json.JSONObject\n"
 )
 
 field_needle = '''    private var port: UsbSerialPort? = null
@@ -353,19 +456,26 @@ if open_needle not in u:
     raise SystemExit("UsbSerialManager open patch point not found")
 u = u.replace(open_needle, open_replacement)
 
+open_fail_needle = '''        } catch (e: Exception) {
+            Log.e(TAG, "open failed", e)
+            return "error: ${e.message}"
+        }
+'''
+open_fail_replacement = '''        } catch (e: Exception) {
+            Log.e(TAG, "open failed", e)
+            closeTransport()
+            return "error: ${e.message}"
+        }
+'''
+if open_fail_needle not in u:
+    raise SystemExit("UsbSerialManager open failure cleanup point not found")
+u = u.replace(open_fail_needle, open_fail_replacement)
+
 disconnect_needle = '''        try { port?.close() } catch (_: Exception) {}
         port = null
         synchronized(readLock) { readBuf.reset() }
 '''
-disconnect_replacement = '''        try { port?.close() } catch (_: Exception) {}
-        port = null
-        usbConnection = null
-        connectedDevice = null
-        signalRts = false
-        signalDtr = false
-        atomicControlMode = 0
-        cdcControlInterfaceId = 0
-        synchronized(readLock) { readBuf.reset() }
+disconnect_replacement = '''        closeTransport()
 '''
 if disconnect_needle not in u:
     raise SystemExit("UsbSerialManager disconnect patch point not found")
@@ -1071,6 +1181,87 @@ if marker not in h:
     raise SystemExit("safe OTA marker missing")
 h = h.replace(marker, safe_ota_helpers + "\n" + marker, 1)
 
+preflight_js = r'''
+window.__preflightPassed = false;
+
+async function doReadOnlyPreflight() {
+  const pre = document.getElementById('preflightBtn');
+  const flash = document.getElementById('flashBtn');
+  const out = document.getElementById('usbHealthText');
+  pre.disabled = true;
+  flash.disabled = true;
+  window.__preflightPassed = false;
+  document.getElementById('progressWrap').style.display = 'block';
+  openLog();
+
+  let session = null;
+  try {
+    setProgress('Проверяем часы без записи…', 2);
+    session = await openChipRom();
+    assertSupportedNeuroWatchChip(session.chip);
+    log('READ-ONLY: чип ' + session.chip, 'ok');
+
+    const efuse0 = (await session.loader.readReg(0x3FF5A000)) >>> 0;
+    const efuse6 = (await session.loader.readReg(0x3FF5A018)) >>> 0;
+    const flashCryptCnt = (efuse0 >>> 20) & 0x7F;
+    let cryptBits = 0;
+    for (let x = flashCryptCnt; x; x >>>= 1) cryptBits += x & 1;
+    const flashEncrypted = (cryptBits & 1) === 1;
+    const secureBoot = ((efuse6 >>> 4) & 0x3) !== 0;
+    if (flashEncrypted || secureBoot) {
+      throw new Error('Flash Encryption/Secure Boot включён — установка заблокирована.');
+    }
+
+    setProgress('Читаем заводскую таблицу разделов…', 20);
+    const table = await readFlashSlowRom(session.loader, 0x8000, 0x1000);
+    const parts = parsePartitionTable(table);
+    validatePartitionLayout(parts, 0x400000);
+
+    const otadataPart = parts.find(p => p.type === 0x01 && p.subtype === 0x00);
+    const nvsPart = parts.find(p => p.type === 0x01 && p.subtype === 0x02);
+    if (!otadataPart || otadataPart.size < 0x2000) {
+      throw new Error('В заводской разметке нет совместимого OTA data.');
+    }
+    if (!nvsPart || nvsPart.size < 0x4000) {
+      throw new Error('В заводской разметке нет совместимого NVS.');
+    }
+
+    setProgress('Проверяем OTA-слоты…', 50);
+    const otadata = await readFlashSlowRom(session.loader, otadataPart.offset, 0x2000);
+    const choice = pickSafeOtaTarget(parts, otadata);
+
+    const app = b64ToBytes(Android.readAssetBase64('app.bin'));
+    if (!app.length || app[0] !== 0xE9) throw new Error('Встроенная NeuroWatch OS повреждена.');
+    const span = Math.ceil(app.length / 0x4000) * 0x4000;
+    if (span > choice.target.size) {
+      throw new Error('Прошивка не помещается в безопасный OTA-слот.');
+    }
+
+    const target = choice.target.label || ('ota_' + choice.targetIndex);
+    window.__preflightPassed = true;
+    flash.disabled = false;
+    out.textContent =
+      'ПРОВЕРКА ПРОЙДЕНА • ' + session.chip +
+      ' • разделов: ' + parts.length +
+      ' • безопасный слот: ' + target +
+      ' @0x' + choice.target.offset.toString(16);
+    setProgress('Проверка пройдена — запись ещё НЕ выполнялась', 100);
+    log('READ-ONLY проверка завершена. Flash не изменялась.', 'ok');
+  } catch (e) {
+    window.__preflightPassed = false;
+    flash.disabled = true;
+    out.textContent = 'ПРОВЕРКА НЕ ПРОЙДЕНА: ' + e.message;
+    setProgress('Проверка остановлена — Flash не изменялась', 0);
+    log('READ-ONLY ошибка: ' + e.message, 'err');
+  } finally {
+    try { await session?.serialPort.close(); } catch (_) {}
+    try { Android.disconnect(); } catch (_) {}
+    pre.disabled = false;
+  }
+}
+'''
+h = h.replace(marker, preflight_js + "\n" + marker, 1)
+
 do_start = h.find("async function doFlash() {")
 do_end = h.find("\nasync function doErase()", do_start)
 if do_start < 0 or do_end < 0:
@@ -1279,6 +1470,9 @@ usb_poll_replacement = """function __refreshNeuroWatchUsb() {
       dot.className = 'dot';
       status.textContent = t().usbNone;
       flash.disabled = true;
+      window.__preflightPassed = false;
+      const pre = document.getElementById('preflightBtn');
+      if (pre) pre.disabled = true;
     }
   }
 }
@@ -1289,7 +1483,110 @@ if usb_poll_marker not in h:
     raise SystemExit("USB startup poll patch point not found")
 h = h.replace(usb_poll_marker, usb_poll_replacement)
 
+# NeuroWatch Manager v2: USB state is explicit and debuggable. The installer
+# never hides a raw Android USB enumeration failure behind a generic status.
+h = h.replace(
+    '</div>\n\n<div class="card">\n  <p id="instructions"></p>\n</div>',
+    '''</div>
+
+<div class="card" id="usbHealthCard" style="margin-top:12px">
+  <div style="font-size:13px;font-weight:600;margin-bottom:8px">USB / ЧАСЫ</div>
+  <div id="usbHealthText" style="font-size:12px;line-height:1.55;color:#aaa">Проверяем USB…</div>
+  <div style="display:flex;gap:8px;margin-top:10px">
+    <button class="secondary" id="usbRefreshBtn" style="margin:0;flex:1">ПРОВЕРИТЬ USB</button>
+    <button class="secondary" id="usbPermissionBtn" style="margin:0;flex:1">РАЗРЕШИТЬ USB</button>
+  </div>
+  <button class="secondary" id="preflightBtn" style="margin-top:8px">ПРОВЕРИТЬ ЧАСЫ БЕЗ ЗАПИСИ</button>
+  <button class="secondary" id="copyDiagBtn" style="margin-top:8px">СКОПИРОВАТЬ ДИАГНОСТИКУ</button>
+</div>
+
+<div class="card">
+  <p id="instructions"></p>
+</div>'''
+)
+
+usb_manager_js = r'''
+function neuroWatchUsbDiagnostics() {
+  const out = document.getElementById('usbHealthText');
+  const flash = document.getElementById('flashBtn');
+  const pre = document.getElementById('preflightBtn');
+  try {
+    const d = JSON.parse(Android.usbDiagnostics());
+    if (!d.usbHost) {
+      out.textContent = 'Android сообщает: USB Host недоступен.';
+      flash.disabled = true;
+      pre.disabled = true;
+      window.__preflightPassed = false;
+      return d;
+    }
+    const watch = (d.devices || []).find(x => x.vid === 0x1A86 && x.pid === 0x55D4);
+    if (!watch) {
+      const all = (d.devices || []).map(x =>
+        '0x' + Number(x.vid).toString(16).padStart(4,'0') + ':0x' +
+        Number(x.pid).toString(16).padStart(4,'0')
+      ).join(', ');
+      out.textContent = d.count
+        ? 'Часы CH9102 не найдены. Android видит: ' + all
+        : 'Android не видит USB-устройств. Проверь OTG, кабель и питание.';
+      flash.disabled = true;
+      pre.disabled = true;
+      window.__preflightPassed = false;
+      return d;
+    }
+    const driver = watch.selectedDriver || watch.defaultDriver || 'нет serial-драйвера';
+    out.textContent =
+      'CH9102 0x1A86:0x55D4 найден • интерфейсов: ' + watch.interfaces +
+      ' • разрешение: ' + (watch.permission ? 'есть' : 'нужно') +
+      ' • драйвер: ' + driver;
+    const ready = !!watch.permission && !!watch.selectedDriver;
+    pre.disabled = !ready;
+    if (!ready) window.__preflightPassed = false;
+    flash.disabled = !ready || !window.__preflightPassed;
+    return d;
+  } catch (e) {
+    out.textContent = 'Ошибка USB-диагностики: ' + e.message;
+    flash.disabled = true;
+    pre.disabled = true;
+    window.__preflightPassed = false;
+    return null;
+  }
+}
+
+document.getElementById('usbRefreshBtn').addEventListener('click', () => {
+  neuroWatchUsbDiagnostics();
+  __refreshNeuroWatchUsb();
+});
+document.getElementById('usbPermissionBtn').addEventListener('click', () => {
+  try {
+    const r = Android.requestUsbPermission();
+    if (r === 'connected') window.__usbEvent('connected');
+    neuroWatchUsbDiagnostics();
+  } catch (e) {
+    log('USB permission: ' + e.message, 'err');
+  }
+});
+document.getElementById('preflightBtn').addEventListener('click', doReadOnlyPreflight);
+document.getElementById('copyDiagBtn').addEventListener('click', () => {
+  try {
+    const usb = Android.usbDiagnostics();
+    const visibleLog = document.getElementById('log')?.innerText || '';
+    const text = 'NeuroWatch Manager v2.0\nUSB=' + usb + '\n\nLOG:\n' + visibleLog;
+    const r = Android.copyText('NeuroWatch diagnostics', text);
+    log(r === 'ok' ? 'Диагностика скопирована в буфер обмена.' : String(r), r === 'ok' ? 'ok' : 'err');
+  } catch (e) {
+    log('Не удалось скопировать диагностику: ' + e.message, 'err');
+  }
+});
+setInterval(neuroWatchUsbDiagnostics, 1500);
+setTimeout(neuroWatchUsbDiagnostics, 100);
+'''
+
+script_close = h.rfind("</script>")
+if script_close < 0:
+    raise SystemExit("flash.html script close not found")
+h = h[:script_close] + usb_manager_js + "\n" + h[script_close:]
+
 html.write_text(h)
-print("patched Android flasher for NeuroWatch safe-install flow")
+print("patched Android flasher for NeuroWatch Manager v2 safe-install flow")
 
 # v1.0 rebuild trigger

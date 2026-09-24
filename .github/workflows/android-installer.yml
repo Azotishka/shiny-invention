@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - neurowatch-installer-v14
+      - neurowatch-installer-v20
     paths:
       - 'firmware/**'
       - 'scripts/patch_neurowatch_installer.py'
@@ -83,7 +83,7 @@ jobs:
           cat > android-installer/app/src/main/assets/firmware.json <<'JSON'
           {
             "name": "NeuroWatch OS",
-            "version": "v1.4 USB Recovery",
+            "version": "v2.0 Device Manager",
             "parts": [
               { "file": "app.bin", "offset": "0x0" }
             ]
@@ -119,6 +119,15 @@ jobs:
           assert "ROM SPI attach (8-byte ESP32 packet)" in h
           assert "new Uint8Array([0, 0, 0, 0])" in h
           assert "setInterval(__refreshNeuroWatchUsb, 1200)" in h
+          assert "function neuroWatchUsbDiagnostics()" in h
+          assert "usbRefreshBtn" in h and "usbPermissionBtn" in h
+          assert "setInterval(neuroWatchUsbDiagnostics, 1500)" in h
+          assert "async function doReadOnlyPreflight()" in h
+          assert "preflightBtn" in h
+          assert "window.__preflightPassed = false" in h
+          assert "ПРОВЕРИТЬ ЧАСЫ БЕЗ ЗАПИСИ" in h
+          assert "copyDiagBtn" in h
+          assert "СКОПИРОВАТЬ ДИАГНОСТИКУ" in h
           # The safe ROM path must not use esptool-js 0.6.1's 4-byte flashSpiAttach helper.
           safe = h[h.index("async function connectRomWithSignalSequence"):h.index("// ─── Прошивка")]
           assert ".flashSpiAttach(0)" not in safe
@@ -133,6 +142,20 @@ jobs:
           assert "it.vendorId == 0x1A86 && it.productId == 0x55D4" in usb
           assert "serialDriverFor(device)" in usb
           assert "CdcAcmSerialDriver::class.java" in usb
+          assert "fun diagnosticsJson(): String" in usb
+          assert "private fun closeTransport()" in usb
+          assert "usbConnection?.close()" in usb
+          assert "closeTransport()" in usb
+
+          bridge = Path("app/src/main/java/io/github/drakosha/espflash/JsBridge.kt").read_text()
+          assert "fun requestUsbPermission(): String" in bridge
+          assert "fun usbDiagnostics(): String" in bridge
+          assert "fun copyText(label: String, text: String): String" in bridge
+          # v2 polling must not spam Android permission dialogs.
+          cc_start = bridge.index("fun checkConnection(): String")
+          cc_end = bridge.index("\n    @JavascriptInterface", cc_start)
+          cc = bridge[cc_start:cc_end]
+          assert "requestPermission" not in cc
 
           gradle = Path("app/build.gradle").read_text()
           assert "usb-serial-for-android:3.7.3" in gradle
@@ -146,7 +169,8 @@ jobs:
           Path("/tmp/neurowatch-ota-helpers.js").write_text(h[hs:he])
           PY
           node --check /tmp/neurowatch-flash.js
-          cat /tmp/neurowatch-ota-helpers.js ../scripts/test_installer_ota.js > /tmp/neurowatch-ota-test.js
+          printf 'global.window = {};\n' > /tmp/neurowatch-ota-test.js
+          cat /tmp/neurowatch-ota-helpers.js ../scripts/test_installer_ota.js >> /tmp/neurowatch-ota-test.js
           node /tmp/neurowatch-ota-test.js
           test -f app/src/main/assets/app.bin
           test ! -f app/src/main/assets/bootloader.bin
@@ -162,15 +186,17 @@ jobs:
           set -euo pipefail
           gradle --no-daemon :app:assembleDebug \
             -PappId=ru.neurogazette.neurowatchinstaller \
-            -PappLabel='NeuroWatch Installer' \
-            -PversionName=1.4 \
-            -PversionCode=14
+            -PappLabel='NeuroWatch Manager' \
+            -PversionName=2.0 \
+            -PversionCode=20
           mkdir -p ../release-installer
-          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Installer-v1.4.apk
-          (cd ../release-installer && sha256sum NeuroWatch-Installer-v1.4.apk > SHA256SUMS.txt)
+          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Manager-v2.0.apk
+          (cd ../release-installer && sha256sum NeuroWatch-Manager-v2.0.apk > SHA256SUMS.txt)
           printf '%s\n' \
-            'NeuroWatch Installer v1.4 for the detected ESP32-PICO-D4 / 4MB + CH9102 platform.' \
-            'CH9102 is detected directly from Android UsbManager even if the serial library misses it; the UI continuously rescans USB and uses an explicit CDC fallback driver for 1A86:55D4.' \
+            'NeuroWatch Manager v2.0 for the detected ESP32-PICO-D4 / 4MB + CH9102 platform.' \
+            'USB detection is diagnostic-first: raw Android enumeration is visible, USB permission is explicit, CH9102 has a CDC fallback driver, and stale USB handles are always closed before reconnect.' \
+            'The app separates raw USB diagnostics from flashing: installation stays disabled until the exact watch, permission, and serial driver are all ready.' \
+            'A read-only hardware preflight must successfully identify the ESP32 and validate the factory partition/OTA layout before the Install button can be enabled.' \
             'It validates security eFuses, backs up partition table + OTA metadata, writes only an inactive OTA app slot, verifies it by MD5, then switches OTA metadata.' \
             'It does NOT package or overwrite the bootloader or partition table, and destructive full-flash erase is disabled in the UI.' \
             'If preflight, read, write, or MD5 verification fails before OTA switch, the existing active system remains selected.' \
@@ -178,6 +204,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NeuroWatch-Installer-Android-v1.4
+          name: NeuroWatch-Manager-Android-v2.0
           path: release-installer/
           if-no-files-found: error
