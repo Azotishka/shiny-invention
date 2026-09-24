@@ -1168,6 +1168,87 @@ if marker not in h:
     raise SystemExit("safe OTA marker missing")
 h = h.replace(marker, safe_ota_helpers + "\n" + marker, 1)
 
+preflight_js = r'''
+window.__preflightPassed = false;
+
+async function doReadOnlyPreflight() {
+  const pre = document.getElementById('preflightBtn');
+  const flash = document.getElementById('flashBtn');
+  const out = document.getElementById('usbHealthText');
+  pre.disabled = true;
+  flash.disabled = true;
+  window.__preflightPassed = false;
+  document.getElementById('progressWrap').style.display = 'block';
+  openLog();
+
+  let session = null;
+  try {
+    setProgress('Проверяем часы без записи…', 2);
+    session = await openChipRom();
+    assertSupportedNeuroWatchChip(session.chip);
+    log('READ-ONLY: чип ' + session.chip, 'ok');
+
+    const efuse0 = (await session.loader.readReg(0x3FF5A000)) >>> 0;
+    const efuse6 = (await session.loader.readReg(0x3FF5A018)) >>> 0;
+    const flashCryptCnt = (efuse0 >>> 20) & 0x7F;
+    let cryptBits = 0;
+    for (let x = flashCryptCnt; x; x >>>= 1) cryptBits += x & 1;
+    const flashEncrypted = (cryptBits & 1) === 1;
+    const secureBoot = ((efuse6 >>> 4) & 0x3) !== 0;
+    if (flashEncrypted || secureBoot) {
+      throw new Error('Flash Encryption/Secure Boot включён — установка заблокирована.');
+    }
+
+    setProgress('Читаем заводскую таблицу разделов…', 20);
+    const table = await readFlashSlowRom(session.loader, 0x8000, 0x1000);
+    const parts = parsePartitionTable(table);
+    validatePartitionLayout(parts, 0x400000);
+
+    const otadataPart = parts.find(p => p.type === 0x01 && p.subtype === 0x00);
+    const nvsPart = parts.find(p => p.type === 0x01 && p.subtype === 0x02);
+    if (!otadataPart || otadataPart.size < 0x2000) {
+      throw new Error('В заводской разметке нет совместимого OTA data.');
+    }
+    if (!nvsPart || nvsPart.size < 0x4000) {
+      throw new Error('В заводской разметке нет совместимого NVS.');
+    }
+
+    setProgress('Проверяем OTA-слоты…', 50);
+    const otadata = await readFlashSlowRom(session.loader, otadataPart.offset, 0x2000);
+    const choice = pickSafeOtaTarget(parts, otadata);
+
+    const app = b64ToBytes(Android.readAssetBase64('app.bin'));
+    if (!app.length || app[0] !== 0xE9) throw new Error('Встроенная NeuroWatch OS повреждена.');
+    const span = Math.ceil(app.length / 0x4000) * 0x4000;
+    if (span > choice.target.size) {
+      throw new Error('Прошивка не помещается в безопасный OTA-слот.');
+    }
+
+    const target = choice.target.label || ('ota_' + choice.targetIndex);
+    window.__preflightPassed = true;
+    flash.disabled = false;
+    out.textContent =
+      'ПРОВЕРКА ПРОЙДЕНА • ' + session.chip +
+      ' • разделов: ' + parts.length +
+      ' • безопасный слот: ' + target +
+      ' @0x' + choice.target.offset.toString(16);
+    setProgress('Проверка пройдена — запись ещё НЕ выполнялась', 100);
+    log('READ-ONLY проверка завершена. Flash не изменялась.', 'ok');
+  } catch (e) {
+    window.__preflightPassed = false;
+    flash.disabled = true;
+    out.textContent = 'ПРОВЕРКА НЕ ПРОЙДЕНА: ' + e.message;
+    setProgress('Проверка остановлена — Flash не изменялась', 0);
+    log('READ-ONLY ошибка: ' + e.message, 'err');
+  } finally {
+    try { await session?.serialPort.close(); } catch (_) {}
+    try { Android.disconnect(); } catch (_) {}
+    pre.disabled = false;
+  }
+}
+'''
+h = h.replace(marker, preflight_js + "\n" + marker, 1)
+
 do_start = h.find("async function doFlash() {")
 do_end = h.find("\nasync function doErase()", do_start)
 if do_start < 0 or do_end < 0:
@@ -1376,6 +1457,9 @@ usb_poll_replacement = """function __refreshNeuroWatchUsb() {
       dot.className = 'dot';
       status.textContent = t().usbNone;
       flash.disabled = true;
+      window.__preflightPassed = false;
+      const pre = document.getElementById('preflightBtn');
+      if (pre) pre.disabled = true;
     }
   }
 }
@@ -1399,6 +1483,7 @@ h = h.replace(
     <button class="secondary" id="usbRefreshBtn" style="margin:0;flex:1">ПРОВЕРИТЬ USB</button>
     <button class="secondary" id="usbPermissionBtn" style="margin:0;flex:1">РАЗРЕШИТЬ USB</button>
   </div>
+  <button class="secondary" id="preflightBtn" style="margin-top:8px">ПРОВЕРИТЬ ЧАСЫ БЕЗ ЗАПИСИ</button>
 </div>
 
 <div class="card">
@@ -1410,11 +1495,14 @@ usb_manager_js = r'''
 function neuroWatchUsbDiagnostics() {
   const out = document.getElementById('usbHealthText');
   const flash = document.getElementById('flashBtn');
+  const pre = document.getElementById('preflightBtn');
   try {
     const d = JSON.parse(Android.usbDiagnostics());
     if (!d.usbHost) {
       out.textContent = 'Android сообщает: USB Host недоступен.';
       flash.disabled = true;
+      pre.disabled = true;
+      window.__preflightPassed = false;
       return d;
     }
     const watch = (d.devices || []).find(x => x.vid === 0x1A86 && x.pid === 0x55D4);
@@ -1434,11 +1522,16 @@ function neuroWatchUsbDiagnostics() {
       'CH9102 0x1A86:0x55D4 найден • интерфейсов: ' + watch.interfaces +
       ' • разрешение: ' + (watch.permission ? 'есть' : 'нужно') +
       ' • драйвер: ' + driver;
-    flash.disabled = !watch.permission || !watch.selectedDriver;
+    const ready = !!watch.permission && !!watch.selectedDriver;
+    pre.disabled = !ready;
+    if (!ready) window.__preflightPassed = false;
+    flash.disabled = !ready || !window.__preflightPassed;
     return d;
   } catch (e) {
     out.textContent = 'Ошибка USB-диагностики: ' + e.message;
     flash.disabled = true;
+    pre.disabled = true;
+    window.__preflightPassed = false;
     return null;
   }
 }
@@ -1456,6 +1549,7 @@ document.getElementById('usbPermissionBtn').addEventListener('click', () => {
     log('USB permission: ' + e.message, 'err');
   }
 });
+document.getElementById('preflightBtn').addEventListener('click', doReadOnlyPreflight);
 setInterval(neuroWatchUsbDiagnostics, 1500);
 setTimeout(neuroWatchUsbDiagnostics, 100);
 '''
