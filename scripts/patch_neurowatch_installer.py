@@ -871,6 +871,18 @@ h = h.replace(
   'Приложение прочитает заводскую OTA-разметку и установит NeuroWatch OS в неактивный слот, не перезаписывая текущую систему'
 )
 
+# Final hardening: remove dead full-flash-backup flow from generated UI and
+# disable the destructive erase action completely. Safe OTA uses only app.bin.
+dead_start = h.find("async function makeFactoryBackup(session) {")
+dead_end = h.find("\n\nasync function connectRomWithSignalSequence", dead_start)
+if dead_start >= 0 and dead_end > dead_start:
+    h = h[:dead_start] + h[dead_end + 2:]
+
+h = h.replace(
+    "document.getElementById('eraseBtn').addEventListener('click', doErase);",
+    "document.getElementById('eraseBtn').style.display = 'none';"
+)
+
 html.write_text(h)
 print("patched Android flasher for NeuroWatch safe-install flow")
 
