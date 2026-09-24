@@ -856,11 +856,18 @@ function crc32SeedFFFFFFFF(bytes) {
 
 function otaEntryInfo(otadata, start) {
   const seq = u32le(otadata, start);
+  const state = u32le(otadata, start + 24);
   const crc = u32le(otadata, start + 28);
   const tmp = new Uint8Array(4);
   putU32le(tmp, 0, seq);
   const expected = crc32SeedFFFFFFFF(tmp);
-  return { seq, crc, valid: seq !== 0xFFFFFFFF && crc === expected };
+  // INVALID(3) and ABORTED(4) must never be treated as the active copy.
+  // UNDEFINED(0xffffffff), NEW(0), PENDING_VERIFY(1), VALID(2) are selectable.
+  const stateBootable = state !== 3 && state !== 4;
+  return {
+    seq, state, crc,
+    valid: seq !== 0xFFFFFFFF && crc === expected && stateBootable
+  };
 }
 
 async function saveSmallBackup(bytes, name) {
@@ -925,15 +932,21 @@ function pickSafeOtaTarget(parts, otadata) {
   }
 
   const target = otaApps[targetIndex];
-  const targetSeqBase = (target.subtype & 0x0F) + 1;
-  let nextSeq = targetSeqBase;
-  if (base >= 0) {
-    while (baseSeq > (targetSeqBase % otaApps.length) + Math.floor((nextSeq - targetSeqBase) / otaApps.length) * otaApps.length) {
-      nextSeq += otaApps.length;
-    }
-    while (((nextSeq - 1) % otaApps.length) !== targetIndex || nextSeq <= baseSeq) {
-      nextSeq += otaApps.length;
-    }
+
+  // Select the smallest sequence number newer than the active entry which maps
+  // to targetIndex. This is the same modulo rule used by the ESP-IDF bootloader:
+  // selected slot = (ota_seq - 1) % ota_app_count.
+  let nextSeq;
+  if (base < 0) {
+    nextSeq = targetIndex + 1;
+  } else {
+    const activeIndex = (baseSeq - 1) % otaApps.length;
+    let delta = (targetIndex - activeIndex + otaApps.length) % otaApps.length;
+    if (delta === 0) delta = otaApps.length;
+    nextSeq = (baseSeq + delta) >>> 0;
+  }
+  if (nextSeq === 0 || nextSeq === 0xFFFFFFFF) {
+    throw new Error('Невозможно безопасно сформировать OTA sequence number.');
   }
 
   const writeCopy = base === 0 ? 1 : 0;
@@ -1000,6 +1013,10 @@ safe_do_flash = r'''async function doFlash() {
     const otadataPart = partsInfo.find(p => p.type === 0x01 && p.subtype === 0x00);
     if (!otadataPart || otadataPart.size < 0x2000) {
       throw new Error('OTA data partition не найден. Безопасная установка отменена.');
+    }
+    const nvsPart = partsInfo.find(p => p.type === 0x01 && p.subtype === 0x02);
+    if (!nvsPart || nvsPart.size < 0x4000) {
+      throw new Error('Совместимый NVS-раздел не найден. NeuroWatch OS не будет записана.');
     }
 
     const otadata = await readFlashSlowRom(session.loader, otadataPart.offset, 0x2000, (done,total) => {
