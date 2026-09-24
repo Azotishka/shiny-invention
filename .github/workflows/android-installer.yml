@@ -169,7 +169,8 @@ jobs:
           Path("/tmp/neurowatch-ota-helpers.js").write_text(h[hs:he])
           PY
           node --check /tmp/neurowatch-flash.js
-          cat /tmp/neurowatch-ota-helpers.js ../scripts/test_installer_ota.js > /tmp/neurowatch-ota-test.js
+          printf 'global.window = {};\n' > /tmp/neurowatch-ota-test.js
+          cat /tmp/neurowatch-ota-helpers.js ../scripts/test_installer_ota.js >> /tmp/neurowatch-ota-test.js
           node /tmp/neurowatch-ota-test.js
           test -f app/src/main/assets/app.bin
           test ! -f app/src/main/assets/bootloader.bin
