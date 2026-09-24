@@ -166,7 +166,7 @@ jobs:
           (cd ../release-installer && sha256sum NeuroWatch-Installer-v1.3.apk > SHA256SUMS.txt)
           printf '%s\n' \
             'NeuroWatch Installer v1.3 for the detected ESP32-PICO-D4 / 4MB + CH9102 platform.' \
-            'CH9102 DTR/RTS are driven atomically; classic ESP32 ROM SPI_ATTACH uses the correct 8-byte payload required by Espressif's ROM protocol.' \
+            'CH9102 DTR/RTS are driven atomically; classic ESP32 ROM SPI_ATTACH uses the correct 8-byte payload required by the Espressif ROM protocol.' \
             'It validates security eFuses, backs up partition table + OTA metadata, writes only an inactive OTA app slot, verifies it by MD5, then switches OTA metadata.' \
             'It does NOT package or overwrite the bootloader or partition table, and destructive full-flash erase is disabled in the UI.' \
             'If preflight, read, write, or MD5 verification fails before OTA switch, the existing active system remains selected.' \
