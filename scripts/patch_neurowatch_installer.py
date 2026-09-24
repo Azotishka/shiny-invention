@@ -720,10 +720,11 @@ async function connectRomWithSignalSequence(name, steps, attempts = 6) {
   loader.info('Chip is ' + chip);
   if (loader.chip.postConnect) await loader.chip.postConnect(loader);
 
-  // Attach the normal SPI flash pins for ROM-side flash reads.
-  try { await loader.flashSpiAttach(0); } catch (e) {
-    log('SPI attach warning: ' + e.message, 'info');
-  }
+  // esptool-js 0.6.1 sends only 4 bytes for SPI_ATTACH. Classic ESP32
+  // ROM expects 8 bytes: uint32 hspi_arg + is_legacy + 3 reserved bytes.
+  // A short packet caused the exact post-detection timeout seen on the watch.
+  await attachEsp32FlashRom(loader);
+  log('SPI Flash подключена к ROM корректным 8-байтным пакетом.', 'ok');
   return { loader, serialPort, chip };
 }
 
@@ -745,8 +746,8 @@ async function openChipRom() {
       await loader.connect('no_reset', 3);
       const chip = await loader.chip.getChipDescription(loader);
       if (loader.chip.postConnect) await loader.chip.postConnect(loader);
-      try { await loader.flashSpiAttach(0); } catch (_) {}
-      log('ESP32 уже был доступен в ROM bootloader.', 'ok');
+      await attachEsp32FlashRom(loader);
+      log('ESP32 уже был доступен в ROM bootloader; SPI Flash подключена.', 'ok');
       return { loader, serialPort, chip };
     } catch (e) {
       log('Текущий режим не bootloader — выполняю автоматический reset.', 'info');
@@ -788,6 +789,24 @@ async function openChipRom() {
     );
   }
   throw new Error('Неподдерживаемый USB-UART для автоматической установки. Flash НЕ изменялась.');
+}
+
+async function attachEsp32FlashRom(loader) {
+  // Espressif esptool.py's classic ESP32 ROM protocol:
+  // SPI_ATTACH(0x0D) payload = <I hspi_arg> + <BBBB is_legacy,0,0,0>.
+  // All-zero arguments select the normal embedded/default SPI flash pins.
+  let pkt = loader._appendArray(
+    loader._intToByteArray(0),
+    new Uint8Array([0, 0, 0, 0])
+  );
+  await loader.checkCommand(
+    'ROM SPI attach (8-byte ESP32 packet)',
+    0x0D,
+    pkt,
+    0,
+    0,
+    5000
+  );
 }
 
 function u16le(a, o) {
@@ -1160,6 +1179,9 @@ safe_do_flash = r'''async function doFlash() {
     log('Заводское приложение осталось во Flash. Если новая система не запустится, её можно вернуть через USB.', 'info');
   } catch (e) {
     log('Ошибка: ' + e.message, 'err');
+    if (/Serial data stream stopped|Invalid head of packet|No serial data received/i.test(String(e.message))) {
+      log('Связь с ROM-загрузчиком потеряна до записи. Flash не переключалась.', 'info');
+    }
     log(
       'Установщик остановился безопасно. Если переключение OTA не было завершено, ' +
       'активной остаётся прежняя система. Повторный запуск приложения безопасен.',
