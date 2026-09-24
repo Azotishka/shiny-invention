@@ -424,10 +424,9 @@ usb.write_text(u)
 g = gradle.read_text()
 if "com.github.mik3y:usb-serial-for-android:3.7.3" not in g:
     raise SystemExit("usb-serial dependency patch point not found")
-g = g.replace(
-    "com.github.mik3y:usb-serial-for-android:3.7.3",
-    "com.github.mik3y:usb-serial-for-android:3.11.0"
-)
+# Keep the upstream-tested 3.7.3 dependency. v3.11.x pulls Kotlin 2.2
+# metadata, which is incompatible with the pinned Kotlin 1.9 Android project.
+# The CH9102 reliability fix is implemented in our native USB layer instead.
 gradle.write_text(g)
 
 h = html.read_text()
