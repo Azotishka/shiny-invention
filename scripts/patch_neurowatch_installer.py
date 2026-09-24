@@ -197,7 +197,7 @@ bridge_clear_needle = '''    @JavascriptInterface
     fun readData(): String = usbManager.readBufferedBase64()
 
     @JavascriptInterface
-    fun setSignals(rts: Int, dtr: Int) = usbManager.setSignals(rts, dtr)
+    fun setSignals(rts: Int, dtr: Int): String = usbManager.setSignals(rts, dtr)
 '''
 bridge_clear_replacement = '''    @JavascriptInterface
     fun readData(): String = usbManager.readBufferedBase64()
@@ -328,8 +328,8 @@ signals_replacement = '''    private fun isCh9102(device: UsbDevice?): Boolean =
         if (rc < 0) throw IOException("CH9102 control-line request failed: rc=$rc")
     }
 
-    fun setSignals(rts: Int, dtr: Int) {
-        try {
+    fun setSignals(rts: Int, dtr: Int): String {
+        return try {
             val nextRts = if (rts == -1) signalRts else rts != 0
             val nextDtr = if (dtr == -1) signalDtr else dtr != 0
 
@@ -343,9 +343,10 @@ signals_replacement = '''    private fun isCh9102(device: UsbDevice?): Boolean =
             signalRts = nextRts
             signalDtr = nextDtr
             Log.d(TAG, "signals rts=$signalRts dtr=$signalDtr atomic=${isCh9102(connectedDevice)}")
+            "ok"
         } catch (e: Exception) {
             Log.e(TAG, "setSignals error", e)
-            throw e
+            "error: ${e.message}"
         }
     }
 '''
@@ -664,11 +665,13 @@ async function connectRomWithSignalSequence(name, steps, attempts = 6) {
   log('USB-порт открыт; atomic ROM reset: ' + name, 'info');
 
   if (Android.clearInput) Android.clearInput();
-  Android.setSignals(0, 0);
+  let signalResult = Android.setSignals(0, 0);
+  if (signalResult && signalResult !== 'ok') throw new Error(signalResult);
   await new Promise(r => setTimeout(r, 100));
 
   for (const [rts, dtr, delayMs] of steps) {
-    Android.setSignals(rts, dtr);
+    signalResult = Android.setSignals(rts, dtr);
+    if (signalResult && signalResult !== 'ok') throw new Error(signalResult);
     await new Promise(r => setTimeout(r, delayMs));
   }
 
