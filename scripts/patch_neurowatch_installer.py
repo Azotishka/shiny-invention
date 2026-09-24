@@ -1078,10 +1078,12 @@ safe_do_flash = r'''async function doFlash() {
     if (app[0] !== 0xE9) {
       throw new Error('Встроенный app.bin не похож на ESP32 application image. Запись отменена.');
     }
-    if (app.length > choice.target.size) {
+    const flashWriteSpan = Math.ceil(app.length / 0x4000) * 0x4000;
+    if (flashWriteSpan > choice.target.size) {
       throw new Error(
-        'NeuroWatch OS (' + app.length + ' B) не помещается в ' +
-        choice.target.label + ' (' + choice.target.size + ' B). Ничего не записано.'
+        'NeuroWatch OS с безопасным выравниванием записи (' + flashWriteSpan +
+        ' B) не помещается в ' + choice.target.label +
+        ' (' + choice.target.size + ' B). Ничего не записано.'
       );
     }
 
