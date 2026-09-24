@@ -51,11 +51,6 @@ jobs:
             firmware/NeuroWatch_OS
           python3 scripts/check_ota.py build/NeuroWatch_OS.ino.bin
           cp build/NeuroWatch_OS.ino.bin installer-assets/app.bin
-          cp build/NeuroWatch_OS.ino.bootloader.bin installer-assets/bootloader.bin
-          cp build/NeuroWatch_OS.ino.partitions.bin installer-assets/partitions.bin
-          BOOTAPP="$(find "$HOME/.arduino15" -type f -name boot_app0.bin | head -n 1)"
-          test -n "$BOOTAPP"
-          cp "$BOOTAPP" installer-assets/boot_app0.bin
           ls -lh installer-assets
 
       - uses: actions/setup-java@v4
@@ -80,16 +75,13 @@ jobs:
           git checkout c4036ace9d2f5526e3535d1ac8bfb8ac3bafc23d
           cd ..
           python3 scripts/patch_neurowatch_installer.py android-installer
-          cp installer-assets/*.bin android-installer/app/src/main/assets/
+          cp installer-assets/app.bin android-installer/app/src/main/assets/
           cat > android-installer/app/src/main/assets/firmware.json <<'JSON'
           {
             "name": "NeuroWatch OS",
-            "version": "v1.0 Safe OTA Installer",
+            "version": "v1.1 Final Safe OTA Installer",
             "parts": [
-              { "file": "bootloader.bin", "offset": "0x1000" },
-              { "file": "partitions.bin", "offset": "0x8000" },
-              { "file": "boot_app0.bin", "offset": "0xE000" },
-              { "file": "app.bin", "offset": "0x10000" }
+              { "file": "app.bin", "offset": "0x0" }
             ]
           }
           JSON
@@ -101,6 +93,32 @@ jobs:
           ESPTOOL_VERSION: '0.6.1'
         run: ./scripts/bundle-esptool.sh
 
+      - name: Verify final installer safety invariants
+        shell: bash
+        working-directory: android-installer
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          h = Path("app/src/main/assets/flash.html").read_text()
+          assert h.count("async function doFlash() {") == 1
+          assert "async function openChipRom()" in h
+          assert "ROM read flash block" in h
+          assert "flashMd5sum(choice.target.offset, app.length)" in h
+          assert "Bootloader, таблица разделов и текущая заводская прошивка НЕ будут перезаписаны." in h
+          assert "async function makeFactoryBackup(session)" not in h
+          assert "addEventListener('click', doErase)" not in h
+          s = h[h.index("<script>")+8:h.rindex("</script>")]
+          Path("/tmp/neurowatch-flash.js").write_text(s)
+          PY
+          node --check /tmp/neurowatch-flash.js
+          test -f app/src/main/assets/app.bin
+          test ! -f app/src/main/assets/bootloader.bin
+          test ! -f app/src/main/assets/partitions.bin
+          test ! -f app/src/main/assets/boot_app0.bin
+          grep -q '"file": "app.bin"' app/src/main/assets/firmware.json
+          ! grep -q 'bootloader.bin' app/src/main/assets/firmware.json
+
       - name: Build installer APK
         shell: bash
         working-directory: android-installer
@@ -109,18 +127,20 @@ jobs:
           gradle --no-daemon :app:assembleDebug \
             -PappId=ru.neurogazette.neurowatchinstaller \
             -PappLabel='NeuroWatch Installer' \
-            -PversionName=1.0 \
-            -PversionCode=10
+            -PversionName=1.1 \
+            -PversionCode=11
           mkdir -p ../release-installer
-          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Installer-v1.0.apk
-          sha256sum ../release-installer/NeuroWatch-Installer-v1.0.apk > ../release-installer/SHA256SUMS.txt
+          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Installer-v1.1.apk
+          (cd ../release-installer && sha256sum NeuroWatch-Installer-v1.1.apk > SHA256SUMS.txt)
           printf '%s\n' \
-            'Installer detects classic ESP32, requires 4MB Flash, creates a full 4MB backup first, then asks again before writing.' \
-            'If any preflight or backup step fails, do not continue.' \
+            'Final safe OTA installer for the detected ESP32-PICO-D4 / 4MB platform.' \
+            'It reads and backs up the factory partition table + OTA metadata, writes only an inactive OTA app slot, verifies the written app by MD5, then switches OTA boot metadata.' \
+            'It does NOT package or overwrite the bootloader or partition table, and destructive full-flash erase is disabled in the UI.' \
+            'If any validation, read, write, or MD5 verification fails, the existing active system remains selected.' \
             > ../release-installer/READ_FIRST.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NeuroWatch-Installer-Android-v1.0
+          name: NeuroWatch-Installer-Android-v1.1
           path: release-installer/
           if-no-files-found: error
