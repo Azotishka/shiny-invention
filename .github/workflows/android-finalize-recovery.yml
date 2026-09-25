@@ -104,7 +104,9 @@ jobs:
           from pathlib import Path
           h = Path("app/src/main/assets/flash.html").read_text()
           assert "ПРОВЕРИТЬ И ЗАПУСТИТЬ NEUROWATCH OS" in h
-          assert "async function verifyApp(loader, expected, appLength)" in h\n          assert "flashMd5sum(0x10000, appLength)" in h\n          assert "verifyApp(session.loader, expected, app.length)" in h
+          assert "async function verifyApp(loader, expected, appLength)" in h
+          assert "flashMd5sum(0x10000, appLength)" in h
+          assert "verifyApp(session.loader, expected, app.length)" in h
           assert "writeFlashRaw(" in h
           assert "address: 0x10000" in h
           assert "Android.setSignals(1, 0)" in h
