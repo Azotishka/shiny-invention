@@ -1,0 +1,172 @@
+name: NeuroWatch Android Full Reinstall
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - neurowatch-full-reinstall-v1
+    paths:
+      - 'firmware/**'
+      - 'scripts/patch_neurowatch_installer.py'
+      - 'scripts/patch_full_reinstall.py'
+      - '.github/workflows/android-full-reinstall.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: python -m pip install --disable-pip-version-check pyserial
+
+      - uses: arduino/setup-arduino-cli@v2
+
+      - name: Install pinned ESP32 core and Watchy libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          INDEX=https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index --additional-urls "$INDEX"
+          arduino-cli core install esp32:esp32@2.0.15 --additional-urls "$INDEX"
+          arduino-cli lib install 'Watchy@1.4.7'
+          arduino-cli lib install 'DS3232RTC@2.0.1'
+          arduino-cli lib install 'WiFiManager@2.0.17'
+
+      - name: Build complete NeuroWatch OS image set
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build installer-assets
+          arduino-cli compile \
+            --fqbn 'esp32:esp32:watchy:Revision=v20,PartitionScheme=min_spiffs' \
+            --build-path "$PWD/build" \
+            firmware/NeuroWatch_OS
+
+          APP=build/NeuroWatch_OS.ino.bin
+          BOOT=build/NeuroWatch_OS.ino.bootloader.bin
+          PART=build/NeuroWatch_OS.ino.partitions.bin
+          BOOTAPP="$(find "$HOME/.arduino15/packages/esp32" -name boot_app0.bin -type f | head -n1)"
+
+          test -s "$APP"
+          test -s "$BOOT"
+          test -s "$PART"
+          test -n "$BOOTAPP"
+          test -s "$BOOTAPP"
+
+          python3 scripts/check_ota.py "$APP"
+          cp "$APP" installer-assets/app.bin
+          cp "$BOOT" installer-assets/bootloader.bin
+          cp "$PART" installer-assets/partitions.bin
+          cp "$BOOTAPP" installer-assets/boot_app0.bin
+
+          ls -lh installer-assets
+          sha256sum installer-assets/*
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Prepare full reinstall Android app
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/drakosha/esp-flash-android.git android-installer
+          cd android-installer
+          git checkout c4036ace9d2f5526e3535d1ac8bfb8ac3bafc23d
+          cd ..
+
+          python3 scripts/patch_neurowatch_installer.py android-installer
+          python3 scripts/patch_full_reinstall.py android-installer
+          cp installer-assets/*.bin android-installer/app/src/main/assets/
+
+          cat > android-installer/app/src/main/assets/firmware.json <<'JSON'
+          {
+            "name": "NeuroWatch OS Full Reinstall",
+            "version": "v1.0",
+            "parts": [
+              { "file": "bootloader.bin", "offset": "0x1000" },
+              { "file": "partitions.bin", "offset": "0x8000" },
+              { "file": "boot_app0.bin", "offset": "0xE000" },
+              { "file": "app.bin", "offset": "0x10000" }
+            ]
+          }
+          JSON
+
+      - name: Bundle Espressif esptool-js 0.6.1
+        working-directory: android-installer
+        env:
+          ESPTOOL_VERSION: '0.6.1'
+        run: ./scripts/bundle-esptool.sh
+
+      - name: Verify destructive installer invariants
+        shell: bash
+        working-directory: android-installer
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          h = Path("app/src/main/assets/flash.html").read_text()
+          assert "await session.loader.eraseFlash()" in h
+          assert "0x1000" in h and "bootloader.bin" in h
+          assert "0x8000" in h and "partitions.bin" in h
+          assert "0xE000" in h and "boot_app0.bin" in h
+          assert "0x10000" in h and "app.bin" in h
+          assert "ПОЛНОСТЬЮ СОТРЁТ заводскую систему" in h
+          assert "flashMd5sum" in h
+          assert "async function openChipRom()" in h
+          s = h[h.index("<script>")+8:h.rindex("</script>")]
+          Path("/tmp/neurowatch-full.js").write_text(s)
+          PY
+          node --check /tmp/neurowatch-full.js
+          test -s app/src/main/assets/bootloader.bin
+          test -s app/src/main/assets/partitions.bin
+          test -s app/src/main/assets/boot_app0.bin
+          test -s app/src/main/assets/app.bin
+
+      - name: Build APK
+        shell: bash
+        working-directory: android-installer
+        run: |
+          set -euo pipefail
+          gradle --no-daemon :app:assembleDebug \
+            -PappId=ru.neurogazette.neurowatchfull \
+            -PappLabel='NeuroWatch Full Reinstall' \
+            -PversionName=1.0 \
+            -PversionCode=1
+
+          mkdir -p ../release
+          cp app/build/outputs/apk/debug/app-debug.apk ../release/NeuroWatch-Full-Reinstall-v1.0.apk
+          cp app/src/main/assets/bootloader.bin ../release/
+          cp app/src/main/assets/partitions.bin ../release/
+          cp app/src/main/assets/boot_app0.bin ../release/
+          cp app/src/main/assets/app.bin ../release/
+          (cd ../release && sha256sum *.apk *.bin > SHA256SUMS.txt)
+          printf '%s\n' \
+            'DESTRUCTIVE FULL REINSTALL.' \
+            'This erases the complete 4 MB flash before writing NeuroWatch OS.' \
+            'Factory firmware, settings and data will be lost.' \
+            'Targets: bootloader 0x1000, partition table 0x8000, boot_app0 0xE000, app 0x10000.' \
+            > ../release/READ_FIRST.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeuroWatch-Full-Reinstall-v1.0
+          path: release/
+          if-no-files-found: error
