@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Watchy.h>
 #include <Preferences.h>
+#include <WiFi.h>
 #include "neuro_config.h"
 
 // NeuroWatch OS v0.7 - single standard face, better settings and lower-overhead daily use.
@@ -710,6 +711,12 @@ NeuroWatch watch(nwSettings);
 
 void setup() {
   loadUserPrefs();
+
+  // Daily mode never needs radios. Shut them down before Watchy handles the wake
+  // reason so cold boots and USB resets do not leave RF blocks powered.
+  WiFi.mode(WIFI_OFF);
+  btStop();
+
   watch.init();
 }
 
