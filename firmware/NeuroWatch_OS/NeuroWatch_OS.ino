@@ -654,7 +654,7 @@ class NeuroWatch : public Watchy {
              (unsigned long)(ESP.getFlashChipSize() / (1024UL * 1024UL)));
     label(10, 102, buf);
 
-    snprintf(buf, sizeof(buf), "BOARD: V%u", (unsigned)getBoardRevision());
+    snprintf(buf, sizeof(buf), "CHIP: ESP32-PICO-D4");
     label(10, 122, buf);
 
     snprintf(buf, sizeof(buf), "RTC: %02u:%02u %02u.%02u",
