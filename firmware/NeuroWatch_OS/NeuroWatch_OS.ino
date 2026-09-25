@@ -4,7 +4,7 @@
 #include <WiFi.h>
 #include "neuro_config.h"
 
-// NeuroWatch OS v0.7 - single standard face, better settings and lower-overhead daily use.
+// NeuroWatch OS v0.8 - one standard face, quicker settings and low-overhead daily use.
 // Target: Watchy V2 / ESP32-PICO-D4.
 
 watchySettings nwSettings{
@@ -21,12 +21,17 @@ watchySettings nwSettings{
 
 extern bool alreadyInMenu;
 
-static constexpr uint32_t NW_PREF_MAGIC = 0x4E573037UL; // "NW07"
+static constexpr uint32_t NW_PREF_MAGIC = 0x4E573038UL; // "NW08"; migrates v0.7 settings once.
 RTC_DATA_ATTR uint32_t nwPrefMagic = 0;
 RTC_DATA_ATTR uint8_t nwUse24h = NW_DEFAULT_24H;
 RTC_DATA_ATTR uint8_t nwDateDmy = NW_DEFAULT_DMY;
 RTC_DATA_ATTR uint8_t nwVibration = NW_DEFAULT_VIBRATION;
 RTC_DATA_ATTR uint8_t nwHourlyBuzz = NW_DEFAULT_HOURLY_BUZZ;
+RTC_DATA_ATTR uint8_t nwAlarmEnabled = NW_DEFAULT_ALARM_ENABLED;
+RTC_DATA_ATTR uint8_t nwAlarmHour = NW_DEFAULT_ALARM_HOUR;
+RTC_DATA_ATTR uint8_t nwAlarmMinute = NW_DEFAULT_ALARM_MINUTE;
+RTC_DATA_ATTR uint32_t nwStepGoal = NW_STEP_GOAL;
+RTC_DATA_ATTR uint32_t nwAlarmLastDay = 0xFFFFFFFFUL;
 RTC_DATA_ATTR uint8_t nwMenuPartial = 0;
 RTC_DATA_ATTR uint8_t nwAppReturnToMenu = 0;
 RTC_DATA_ATTR uint32_t nwLastBuzzStamp = 0xFFFFFFFFUL;
@@ -40,13 +45,25 @@ static void loadUserPrefs() {
     nwDateDmy = prefs.getBool("dmy", NW_DEFAULT_DMY);
     nwVibration = prefs.getBool("vib", NW_DEFAULT_VIBRATION);
     nwHourlyBuzz = prefs.getBool("hourbuzz", NW_DEFAULT_HOURLY_BUZZ);
+    nwAlarmEnabled = prefs.getBool("alarm_on", NW_DEFAULT_ALARM_ENABLED);
+    nwAlarmHour = prefs.getUChar("alarm_h", NW_DEFAULT_ALARM_HOUR);
+    nwAlarmMinute = prefs.getUChar("alarm_m", NW_DEFAULT_ALARM_MINUTE);
+    nwStepGoal = prefs.getUInt("step_goal", NW_STEP_GOAL);
     prefs.end();
   } else {
     nwUse24h = NW_DEFAULT_24H;
     nwDateDmy = NW_DEFAULT_DMY;
     nwVibration = NW_DEFAULT_VIBRATION;
     nwHourlyBuzz = NW_DEFAULT_HOURLY_BUZZ;
+    nwAlarmEnabled = NW_DEFAULT_ALARM_ENABLED;
+    nwAlarmHour = NW_DEFAULT_ALARM_HOUR;
+    nwAlarmMinute = NW_DEFAULT_ALARM_MINUTE;
+    nwStepGoal = NW_STEP_GOAL;
   }
+  if (nwAlarmHour > 23) nwAlarmHour = NW_DEFAULT_ALARM_HOUR;
+  if (nwAlarmMinute > 59) nwAlarmMinute = NW_DEFAULT_ALARM_MINUTE;
+  if (nwStepGoal < NW_STEP_GOAL_MIN || nwStepGoal > NW_STEP_GOAL_MAX)
+    nwStepGoal = NW_STEP_GOAL;
   nwPrefMagic = NW_PREF_MAGIC;
 }
 
@@ -58,12 +75,28 @@ static void saveBoolPref(const char *key, bool value) {
   }
 }
 
+static void saveBytePref(const char *key, uint8_t value) {
+  Preferences prefs;
+  if (prefs.begin("nw-os", false)) {
+    prefs.putUChar(key, value);
+    prefs.end();
+  }
+}
+
+static void saveUIntPref(const char *key, uint32_t value) {
+  Preferences prefs;
+  if (prefs.begin("nw-os", false)) {
+    prefs.putUInt(key, value);
+    prefs.end();
+  }
+}
+
 class NeuroWatch : public Watchy {
  public:
   using Watchy::Watchy;
 
   void drawWatchFace() override {
-    maybeHourlyBuzz();
+    if (!maybeDailyAlarm()) maybeHourlyBuzz();
 
     display.setFullWindow();
     display.fillScreen(GxEPD_WHITE);
@@ -114,6 +147,15 @@ class NeuroWatch : public Watchy {
     drawBatteryWidget(10, 111);
     drawStepsWidget(10, 137);
 
+    if (nwAlarmEnabled) {
+      char alarm[20];
+      snprintf(alarm, sizeof(alarm), "ALARM %02u:%02u",
+               (unsigned)nwAlarmHour, (unsigned)nwAlarmMinute);
+      label(10, 153, alarm);
+    } else {
+      label(10, 153, "ALARM OFF");
+    }
+
     display.drawLine(8, 169, 191, 169, GxEPD_BLACK);
     label(10, 176, "UP:STEPS  DN:STATUS");
     label(10, 188, "MENU:SETTINGS   NW " NW_VERSION);
@@ -162,7 +204,7 @@ class NeuroWatch : public Watchy {
   }
 
  private:
-  static constexpr int MENU_COUNT = 9;
+  static constexpr int MENU_COUNT = 12;
 
   void drawStandardWallpaper() {
     display.drawRect(2, 2, 196, 196, GxEPD_BLACK);
@@ -255,9 +297,9 @@ class NeuroWatch : public Watchy {
     snprintf(buf, sizeof(buf), "STEPS %lu", (unsigned long)steps);
     label(x, y, buf);
 
-    const uint32_t capped = steps > NW_STEP_GOAL ? NW_STEP_GOAL : steps;
+    const uint32_t capped = steps > nwStepGoal ? nwStepGoal : steps;
     display.drawRect(82, y - 2, 109, 10, GxEPD_BLACK);
-    const int fill = (int)((capped * 105UL) / NW_STEP_GOAL);
+    const int fill = (int)((capped * 105UL) / nwStepGoal);
     if (fill > 0) display.fillRect(84, y, fill, 6, GxEPD_BLACK);
   }
 
@@ -272,6 +314,20 @@ class NeuroWatch : public Watchy {
     vibMotor(50, 4);
   }
 
+  bool maybeDailyAlarm() {
+    if (!nwAlarmEnabled || currentTime.Hour != nwAlarmHour ||
+        currentTime.Minute != nwAlarmMinute) return false;
+
+    const uint32_t year = (uint32_t)tmYearToCalendar(currentTime.Year);
+    const uint32_t dayStamp = ((year * 13UL + currentTime.Month) * 32UL) +
+                              currentTime.Day;
+    if (dayStamp == nwAlarmLastDay) return false;
+
+    nwAlarmLastDay = dayStamp;
+    vibMotor(70, 8);
+    return true;
+  }
+
   void buzzConfirm() {
     if (nwVibration) vibMotor(35, 2);
   }
@@ -284,8 +340,11 @@ class NeuroWatch : public Watchy {
       case 3: snprintf(buf, size, "DATE FORMAT      %s", nwDateDmy ? "DD.MM" : "MM/DD"); break;
       case 4: snprintf(buf, size, "BUTTON VIB       %s", nwVibration ? "ON" : "OFF"); break;
       case 5: snprintf(buf, size, "HOURLY BUZZ      %s", nwHourlyBuzz ? "ON" : "OFF"); break;
-      case 6: snprintf(buf, size, "RESET STEPS"); break;
-      case 7: snprintf(buf, size, "DIAGNOSTICS"); break;
+      case 6: snprintf(buf, size, "DAILY ALARM      %s", nwAlarmEnabled ? "ON" : "OFF"); break;
+      case 7: snprintf(buf, size, "ALARM TIME    %02u:%02u", (unsigned)nwAlarmHour, (unsigned)nwAlarmMinute); break;
+      case 8: snprintf(buf, size, "STEP GOAL      %5lu", (unsigned long)nwStepGoal); break;
+      case 9: snprintf(buf, size, "RESET STEPS"); break;
+      case 10: snprintf(buf, size, "DIAGNOSTICS"); break;
       default: snprintf(buf, size, "ABOUT / UPDATE"); break;
     }
   }
@@ -336,7 +395,7 @@ class NeuroWatch : public Watchy {
   void selectMenuItem() {
     switch (menuIndex) {
       case 0:
-        editTime();
+        editTime(false);
         return;
       case 1:
         editDate();
@@ -366,9 +425,21 @@ class NeuroWatch : public Watchy {
         showNeuroMenu(true);
         return;
       case 6:
-        resetSteps();
+        nwAlarmEnabled = !nwAlarmEnabled;
+        saveBoolPref("alarm_on", nwAlarmEnabled);
+        buzzConfirm();
+        showNeuroMenu(true);
         return;
       case 7:
+        editTime(true);
+        return;
+      case 8:
+        editStepGoal();
+        return;
+      case 9:
+        resetSteps();
+        return;
+      case 10:
         nwAppReturnToMenu = 1;
         showDiagnostics();
         return;
@@ -386,24 +457,25 @@ class NeuroWatch : public Watchy {
     display.drawRect(2, 2, 196, 196, GxEPD_BLACK);
     label(9, 10, title);
     display.drawLine(7, 26, 192, 26, GxEPD_BLACK);
-    label(9, 177, "UP/DN CHANGE   M:NEXT");
-    label(9, 188, "BACK:CANCEL   AUTO:30S");
+    label(9, 164, "UP/DN CHANGE   HOLD=FAST");
+    label(9, 177, "MENU: NEXT / SAVE");
+    label(9, 188, "BACK: CANCEL   AUTO:60S");
   }
 
-  void editTime() {
+  void editTime(bool alarm = false) {
     guiState = APP_STATE;
     nwAppReturnToMenu = 1;
     RTC.read(currentTime);
 
-    uint8_t hour = currentTime.Hour % 24;
-    uint8_t minute = currentTime.Minute % 60;
+    uint8_t hour = alarm ? nwAlarmHour : currentTime.Hour % 24;
+    uint8_t minute = alarm ? nwAlarmMinute : currentTime.Minute % 60;
     uint8_t field = 0;
     uint32_t lastAction = millis();
 
     waitAllReleased(1500);
 
     while ((uint32_t)(millis() - lastAction) < NW_EDITOR_TIMEOUT_MS) {
-      editorHeader("SET TIME // EASY MODE");
+      editorHeader(alarm ? "SET ALARM TIME" : "SET CLOCK TIME");
 
       display.setTextSize(3);
       display.setCursor(28, 72);
@@ -429,22 +501,31 @@ class NeuroWatch : public Watchy {
         if (field == 0) {
           field = 1;
         } else {
-          tmElements_t tm = currentTime;
-          tm.Hour = hour;
-          tm.Minute = minute;
-          tm.Second = 0;
-          RTC.set(tm);
+          if (alarm) {
+            nwAlarmHour = hour;
+            nwAlarmMinute = minute;
+            saveBytePref("alarm_h", nwAlarmHour);
+            saveBytePref("alarm_m", nwAlarmMinute);
+          } else {
+            tmElements_t tm = currentTime;
+            tm.Hour = hour;
+            tm.Minute = minute;
+            tm.Second = 0;
+            RTC.set(tm);
+          }
           buzzConfirm();
           RTC.read(currentTime);
           showNeuroMenu(false);
           return;
         }
-      } else if (button == 2) {
-        if (field == 0) hour = (hour + 1) % 24;
-        else minute = (minute + 1) % 60;
-      } else if (button == 3) {
-        if (field == 0) hour = hour == 0 ? 23 : hour - 1;
-        else minute = minute == 0 ? 59 : minute - 1;
+      } else if (button == 2 || button == 5) {
+        const uint8_t step = button == 5 ? (field == 0 ? 5 : 10) : 1;
+        if (field == 0) hour = (hour + step) % 24;
+        else minute = (minute + step) % 60;
+      } else if (button == 3 || button == 6) {
+        const uint8_t step = button == 6 ? (field == 0 ? 5 : 10) : 1;
+        if (field == 0) hour = (hour + 24 - step) % 24;
+        else minute = (minute + 60 - step) % 60;
       } else if (button == 4) {
         showNeuroMenu(false);
         return;
@@ -483,11 +564,13 @@ class NeuroWatch : public Watchy {
       const uint8_t maxDay = daysInMonth(month, year);
       if (day > maxDay) day = maxDay;
 
-      editorHeader("SET DATE // EASY MODE");
+      editorHeader("SET DATE");
 
       char buf[24];
+      const uint8_t first = nwDateDmy ? day : month;
+      const uint8_t second = nwDateDmy ? month : day;
       snprintf(buf, sizeof(buf), "%02u.%02u.%04d",
-               (unsigned)day, (unsigned)month, year);
+               (unsigned)first, (unsigned)second, year);
 
       display.setTextSize(2);
       display.setCursor(28, 70);
@@ -498,8 +581,8 @@ class NeuroWatch : public Watchy {
       else if (field == 1) display.drawRect(61, 55, 32, 28, GxEPD_BLACK);
       else display.drawRect(98, 55, 72, 28, GxEPD_BLACK);
 
-      label(28, 105, field == 0 ? "^DAY" : " DAY");
-      label(79, 105, field == 1 ? "^MON" : " MON");
+      label(28, 105, field == 0 ? (nwDateDmy ? "^DAY" : "^MON") : (nwDateDmy ? " DAY" : " MON"));
+      label(79, 105, field == 1 ? (nwDateDmy ? "^MON" : "^DAY") : (nwDateDmy ? " MON" : " DAY"));
       label(132, 105, field == 2 ? "^YEAR" : " YEAR");
       display.display(true);
 
@@ -519,14 +602,32 @@ class NeuroWatch : public Watchy {
           showNeuroMenu(false);
           return;
         }
-      } else if (button == 2) {
-        if (field == 0) day = day >= daysInMonth(month, year) ? 1 : day + 1;
-        else if (field == 1) month = month >= 12 ? 1 : month + 1;
-        else year = year >= 2099 ? 2020 : year + 1;
-      } else if (button == 3) {
-        if (field == 0) day = day <= 1 ? daysInMonth(month, year) : day - 1;
-        else if (field == 1) month = month <= 1 ? 12 : month - 1;
-        else year = year <= 2020 ? 2099 : year - 1;
+      } else if (button == 2 || button == 5) {
+        const bool editingDay = (field == 0 && nwDateDmy) || (field == 1 && !nwDateDmy);
+        const uint8_t step = button == 5 ? (field == 2 ? 10 : (editingDay ? 7 : 3)) : 1;
+        if (field < 2 && editingDay) {
+          const uint8_t limit = daysInMonth(month, year);
+          day = (uint8_t)(((day - 1 + step) % limit) + 1);
+        } else if (field < 2) {
+          month = (uint8_t)(((month - 1 + step) % 12) + 1);
+          const uint8_t limit = daysInMonth(month, year);
+          if (day > limit) day = limit;
+        } else {
+          year = 2020 + ((year - 2020 + step) % 80);
+        }
+      } else if (button == 3 || button == 6) {
+        const bool editingDay = (field == 0 && nwDateDmy) || (field == 1 && !nwDateDmy);
+        const uint8_t step = button == 6 ? (field == 2 ? 10 : (editingDay ? 7 : 3)) : 1;
+        if (field < 2 && editingDay) {
+          const uint8_t limit = daysInMonth(month, year);
+          day = (uint8_t)(((day - 1 + limit - (step % limit)) % limit) + 1);
+        } else if (field < 2) {
+          month = (uint8_t)(((month - 1 + 12 - (step % 12)) % 12) + 1);
+          const uint8_t limit = daysInMonth(month, year);
+          if (day > limit) day = limit;
+        } else {
+          year = 2020 + ((year - 2020 + 80 - (step % 80)) % 80);
+        }
       } else if (button == 4) {
         showNeuroMenu(false);
         return;
@@ -538,29 +639,85 @@ class NeuroWatch : public Watchy {
 
   int waitEditorButton(uint32_t &lastAction) {
     while ((uint32_t)(millis() - lastAction) < NW_EDITOR_TIMEOUT_MS) {
+      int pin = -1;
+      int tapCode = 0;
       if (digitalRead(MENU_BTN_PIN)) {
+        pin = MENU_BTN_PIN;
+        tapCode = 1;
+      } else if (digitalRead(UP_BTN_PIN)) {
+        pin = UP_BTN_PIN;
+        tapCode = 2;
+      } else if (digitalRead(DOWN_BTN_PIN)) {
+        pin = DOWN_BTN_PIN;
+        tapCode = 3;
+      } else if (digitalRead(BACK_BTN_PIN)) {
+        pin = BACK_BTN_PIN;
+        tapCode = 4;
+      }
+
+      if (pin >= 0) {
+        const uint32_t pressedAt = millis();
+        while (digitalRead(pin) && (uint32_t)(millis() - pressedAt) < 900UL)
+          delay(20);
+        const bool longPress = (uint32_t)(millis() - pressedAt) >= 500UL;
         lastAction = millis();
         waitAllReleased(1200);
-        return 1;
+        if (tapCode == 2 && longPress) return 5;
+        if (tapCode == 3 && longPress) return 6;
+        return tapCode;
       }
-      if (digitalRead(UP_BTN_PIN)) {
-        lastAction = millis();
-        waitAllReleased(1200);
-        return 2;
-      }
-      if (digitalRead(DOWN_BTN_PIN)) {
-        lastAction = millis();
-        waitAllReleased(1200);
-        return 3;
-      }
-      if (digitalRead(BACK_BTN_PIN)) {
-        lastAction = millis();
-        waitAllReleased(1200);
-        return 4;
-      }
-      delay(15);
+      delay(25);
     }
     return 0;
+  }
+
+  void editStepGoal() {
+    guiState = APP_STATE;
+    nwAppReturnToMenu = 1;
+    uint32_t value = nwStepGoal;
+    uint32_t lastAction = millis();
+    waitAllReleased(1500);
+
+    while ((uint32_t)(millis() - lastAction) < NW_EDITOR_TIMEOUT_MS) {
+      editorHeader("DAILY STEP GOAL");
+      char buf[24];
+      snprintf(buf, sizeof(buf), "%lu", (unsigned long)value);
+      display.setTextSize(3);
+      display.setCursor(value < 10000UL ? 48 : 30, 78);
+      display.print(buf);
+      display.setTextSize(1);
+      label(60, 112, "STEPS / DAY");
+      label(28, 137, "MIN 1000     MAX 30000");
+      display.display(true);
+
+      const int button = waitEditorButton(lastAction);
+      if (button == 0 || button == 4) {
+        showNeuroMenu(false);
+        return;
+      }
+      if (button == 1) {
+        nwStepGoal = value;
+        saveUIntPref("step_goal", nwStepGoal);
+        buzzConfirm();
+        showNeuroMenu(false);
+        return;
+      }
+
+      const uint32_t step = button == 5 || button == 6
+                                ? NW_STEP_GOAL_HOLD_STEP
+                                : NW_STEP_GOAL_STEP;
+      if (button == 2 || button == 5) {
+        value = value + step > NW_STEP_GOAL_MAX
+                    ? NW_STEP_GOAL_MIN
+                    : value + step;
+      } else if (button == 3 || button == 6) {
+        value = value < NW_STEP_GOAL_MIN + step
+                    ? NW_STEP_GOAL_MAX
+                    : value - step;
+      }
+    }
+
+    showNeuroMenu(false);
   }
 
   void resetSteps() {
@@ -618,11 +775,11 @@ class NeuroWatch : public Watchy {
     display.print(buf);
     display.setTextSize(1);
 
-    snprintf(buf, sizeof(buf), "GOAL %lu", (unsigned long)NW_STEP_GOAL);
+    snprintf(buf, sizeof(buf), "GOAL %lu", (unsigned long)nwStepGoal);
     label(10, 112, buf);
 
-    const uint32_t capped = steps > NW_STEP_GOAL ? NW_STEP_GOAL : steps;
-    const int fill = (int)((capped * 176UL) / NW_STEP_GOAL);
+    const uint32_t capped = steps > nwStepGoal ? nwStepGoal : steps;
+    const int fill = (int)((capped * 176UL) / nwStepGoal);
     display.drawRect(10, 130, 180, 14, GxEPD_BLACK);
     if (fill > 0) display.fillRect(12, 132, fill, 10, GxEPD_BLACK);
 
@@ -667,6 +824,11 @@ class NeuroWatch : public Watchy {
              (unsigned)currentTime.Month);
     label(10, 142, buf);
 
+    snprintf(buf, sizeof(buf), "ALARM: %s %02u:%02u",
+             nwAlarmEnabled ? "ON" : "OFF",
+             (unsigned)nwAlarmHour, (unsigned)nwAlarmMinute);
+    label(10, 162, buf);
+
     label(10, 176, "RADIOS: OFF AT REST");
     label(10, 188, "ANY BUTTON: BACK");
     display.display(false);
@@ -685,9 +847,10 @@ class NeuroWatch : public Watchy {
     label(10, 66, "FACE: STANDARD DAILY");
     label(10, 87, "UPDATE: USB INSTALLER");
     label(10, 108, "WIFI/BT: DISABLED AT REST");
-    label(10, 139, "QUICK KEYS:");
-    label(10, 154, "UP STEPS / DOWN STATUS");
-    label(10, 176, "ANY BUTTON: BACK");
+    label(10, 139, "EDITOR KEYS:");
+    label(10, 154, "UP/DN CHANGE; HOLD=FAST");
+    label(10, 169, "MENU:NEXT/SAVE  BACK:CANCEL");
+    label(10, 188, "ANY BUTTON: BACK");
     display.display(false);
   }
 

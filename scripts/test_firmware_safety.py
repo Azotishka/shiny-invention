@@ -1,9 +1,11 @@
-"""Static safety/UX invariants for NeuroWatch OS v0.7."""
+"""Static safety/UX invariants for NeuroWatch OS v0.8."""
 from pathlib import Path
 import unittest
 
 SOURCE = (Path(__file__).resolve().parents[1] /
           "firmware/NeuroWatch_OS/NeuroWatch_OS.ino").read_text()
+CONFIG = (Path(__file__).resolve().parents[1] /
+          "firmware/NeuroWatch_OS/neuro_config.h").read_text()
 
 
 class FirmwareSafetyContract(unittest.TestCase):
@@ -43,11 +45,14 @@ class FirmwareSafetyContract(unittest.TestCase):
         self.assertIn("digit(141, 37, currentTime.Minute % 10)", SOURCE)
 
     def test_time_and_date_are_separate_easy_editors(self):
-        self.assertIn("void editTime()", SOURCE)
+        self.assertIn("void editTime(bool alarm = false)", SOURCE)
         self.assertIn("void editDate()", SOURCE)
         self.assertGreaterEqual(SOURCE.count("RTC.set(tm);"), 2)
         self.assertIn("daysInMonth", SOURCE)
         self.assertIn("leapYear", SOURCE)
+        self.assertIn("SET CLOCK TIME", SOURCE)
+        self.assertIn("HOLD=FAST", SOURCE)
+        self.assertIn("NW_EDITOR_TIMEOUT_MS 60000UL", CONFIG)
 
     def test_settings_are_persistent_but_cached_in_rtc_memory(self):
         self.assertIn("RTC_DATA_ATTR uint32_t nwPrefMagic", SOURCE)
@@ -60,6 +65,22 @@ class FirmwareSafetyContract(unittest.TestCase):
         self.assertIn("showStepsCard()", SOURCE)
         self.assertIn("RESET STEPS", SOURCE)
         self.assertIn("NW_STEP_GOAL", SOURCE)
+        self.assertIn("editStepGoal()", SOURCE)
+        self.assertIn('saveUIntPref("step_goal", nwStepGoal)', SOURCE)
+
+    def test_daily_alarm_is_configurable_and_fires_once_per_day(self):
+        self.assertIn("maybeDailyAlarm()", SOURCE)
+        self.assertIn("nwAlarmLastDay", SOURCE)
+        self.assertIn('saveBoolPref("alarm_on", nwAlarmEnabled)', SOURCE)
+        self.assertIn('saveBytePref("alarm_h", nwAlarmHour)', SOURCE)
+        self.assertIn('saveBytePref("alarm_m", nwAlarmMinute)', SOURCE)
+
+    def test_existing_v07_preferences_are_migrated(self):
+        self.assertIn('prefs.getBool("24h", NW_DEFAULT_24H)', SOURCE)
+        self.assertIn('prefs.getBool("dmy", NW_DEFAULT_DMY)', SOURCE)
+        self.assertIn('prefs.getBool("vib", NW_DEFAULT_VIBRATION)', SOURCE)
+        self.assertIn('prefs.getBool("hourbuzz", NW_DEFAULT_HOURLY_BUZZ)', SOURCE)
+        self.assertIn('NW_PREF_MAGIC = 0x4E573038UL', SOURCE)
 
     def test_hourly_buzz_is_guarded_against_repeat(self):
         self.assertIn("nwHourlyBuzz", SOURCE)
