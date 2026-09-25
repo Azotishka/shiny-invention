@@ -252,6 +252,9 @@ bridge_clear_replacement = '''    @JavascriptInterface
 
     @JavascriptInterface
     fun setSignals(rts: Int, dtr: Int): String = usbManager.setSignals(rts, dtr)
+
+    @JavascriptInterface
+    fun setSignalMode(mode: Int): String = usbManager.setSignalMode(mode)
 '''
 if bridge_clear_needle not in s:
     raise SystemExit("JsBridge clearInput patch point not found")
@@ -332,6 +335,7 @@ find_replacement = '''    /**
         signalRts = false
         signalDtr = false
         atomicControlMode = 0
+        forcedSignalMode = 0
         cdcControlInterfaceId = 0
         synchronized(readLock) { readBuf.reset() }
     }
@@ -381,7 +385,8 @@ field_replacement = '''    private var port: UsbSerialPort? = null
     private var connectedDevice: UsbDevice? = null
     private var signalRts = false
     private var signalDtr = false
-    private var atomicControlMode = 0 // 0=generic, 1=CDC ACM, 2=CH34x vendor
+    private var atomicControlMode = 0 // detected driver transport: 0=generic, 1=CDC, 2=WCH
+    private var forcedSignalMode = 0 // 0=auto, 1=driver sequential, 2=CDC atomic, 3=WCH vendor atomic
     private var cdcControlInterfaceId = 0
     private var readThread: Thread? = null
 '''
@@ -436,12 +441,14 @@ open_replacement = '''        val connection = usbManager.openDevice(driver.devi
             port!!.setParameters(BAUD_RATE, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
 
             if (isCh9102(device)) {
-                // The physical NeuroWatch uses WCH CH9102 (1A86:55D4).
-                // Keep both lines deasserted after open. Reset will be issued
-                // atomically by setSignals(), avoiding the transient line state
-                // created by separate port.rts / port.dtr USB requests.
-                setSignals(0, 0)
-                Log.i(TAG, "CH9102 opened with atomic DTR/RTS, both deasserted")
+                // Start from a neutral state using the CDC serial driver.
+                // v2.1 explicitly chooses the reset transport afterwards.
+                port!!.rts = false
+                port!!.dtr = false
+                signalRts = false
+                signalDtr = false
+                forcedSignalMode = 0
+                Log.i(TAG, "CH9102 opened neutral; reset transport will be selected explicitly")
             } else {
                 // Preserve upstream behaviour for other bridges.
                 port!!.dtr = true
@@ -492,50 +499,71 @@ signals_replacement = '''    private fun isCh9102(device: UsbDevice?): Boolean =
         device?.vendorId == 0x1A86 && device.productId == 0x55D4
 
     /**
-     * Update DTR and RTS in ONE USB control transfer. The physical 1A86:55D4
-     * device enumerates as CDC ACM on Android (USB class 2, two interfaces),
-     * but some CH9102 variants can use the WCH vendor driver. Support both.
+     * Reset control transport selector:
+     * 0 auto, 1 serial-driver sequential CDC writes,
+     * 2 CDC SET_CONTROL_LINE_STATE (atomic pair),
+     * 3 WCH CH343/CH9102 vendor request 0xA4 (atomic pair).
      *
-     * CDC ACM: SET_CONTROL_LINE_STATE (0x22), value bit0=DTR bit1=RTS.
-     * CH34x:   vendor request 0xA4, active-low SCL_DTR/SCL_RTS bits.
+     * CH9102 is CDC-compatible, but WCH's native driver also exposes a
+     * device-specific 0xA4 control path. v2.1 can try both instead of
+     * assuming one Android/firmware combination.
      */
-    private fun setBridgeSignalsAtomic(rts: Boolean, dtr: Boolean) {
+    fun setSignalMode(mode: Int): String {
+        if (mode !in 0..3) return "error: invalid signal mode $mode"
+        forcedSignalMode = mode
+        Log.i(TAG, "signal mode=$forcedSignalMode")
+        return "ok"
+    }
+
+    private fun setCdcSignalsAtomic(rts: Boolean, dtr: Boolean) {
         val conn = usbConnection ?: throw IOException("USB connection is closed")
-        val rc = when (atomicControlMode) {
-            1 -> {
-                val requestType = UsbConstants.USB_DIR_OUT or UsbConstants.USB_TYPE_CLASS or 0x01
-                val value = (if (dtr) 0x01 else 0) or (if (rts) 0x02 else 0)
-                conn.controlTransfer(
-                    requestType, 0x22, value, cdcControlInterfaceId,
-                    null, 0, 1500
-                )
-            }
-            2 -> {
-                val asserted = (if (dtr) 0x20 else 0) or (if (rts) 0x40 else 0)
-                val value = asserted.inv() and 0xFFFF
-                val requestType = UsbConstants.USB_TYPE_VENDOR or UsbConstants.USB_DIR_OUT
-                conn.controlTransfer(requestType, 0xA4, value, 0, null, 0, 1500)
-            }
-            else -> throw IOException("No atomic control-line transport for this driver")
-        }
-        if (rc < 0) throw IOException("atomic DTR/RTS request failed: rc=$rc mode=$atomicControlMode")
+        val requestType = UsbConstants.USB_DIR_OUT or UsbConstants.USB_TYPE_CLASS or 0x01
+        val value = (if (dtr) 0x01 else 0) or (if (rts) 0x02 else 0)
+        val rc = conn.controlTransfer(
+            requestType, 0x22, value, cdcControlInterfaceId,
+            null, 0, 1500
+        )
+        if (rc < 0) throw IOException("CDC DTR/RTS request failed: rc=$rc if=$cdcControlInterfaceId")
+    }
+
+    private fun setWchSignalsAtomic(rts: Boolean, dtr: Boolean) {
+        val conn = usbConnection ?: throw IOException("USB connection is closed")
+        // WCH ch343/ch9102 driver: request 0xA4, value = ~(DTR=0x20 | RTS=0x40).
+        val asserted = (if (dtr) 0x20 else 0) or (if (rts) 0x40 else 0)
+        val value = asserted.inv() and 0xFFFF
+        val requestType = UsbConstants.USB_TYPE_VENDOR or
+            UsbConstants.USB_RECIP_DEVICE or UsbConstants.USB_DIR_OUT
+        val rc = conn.controlTransfer(requestType, 0xA4, value, 0, null, 0, 1500)
+        if (rc < 0) throw IOException("WCH DTR/RTS request failed: rc=$rc")
     }
 
     fun setSignals(rts: Int, dtr: Int): String {
         return try {
             val nextRts = if (rts == -1) signalRts else rts != 0
             val nextDtr = if (dtr == -1) signalDtr else dtr != 0
+            val mode = when {
+                forcedSignalMode != 0 -> forcedSignalMode
+                isCh9102(connectedDevice) && atomicControlMode == 1 -> 2
+                isCh9102(connectedDevice) && atomicControlMode == 2 -> 3
+                else -> 1
+            }
 
-            if (isCh9102(connectedDevice) && atomicControlMode != 0) {
-                setBridgeSignalsAtomic(nextRts, nextDtr)
-            } else {
-                if (rts != -1) port?.rts = nextRts
-                if (dtr != -1) port?.dtr = nextDtr
+            when (mode) {
+                1 -> {
+                    // Preserve single-line writes when one parameter is -1.
+                    // This is needed to reproduce Espressif's portable
+                    // ClassicReset exactly.
+                    if (rts != -1) port?.rts = nextRts
+                    if (dtr != -1) port?.dtr = nextDtr
+                }
+                2 -> setCdcSignalsAtomic(nextRts, nextDtr)
+                3 -> setWchSignalsAtomic(nextRts, nextDtr)
+                else -> throw IOException("unsupported signal mode=$mode")
             }
 
             signalRts = nextRts
             signalDtr = nextDtr
-            Log.d(TAG, "signals rts=$signalRts dtr=$signalDtr mode=$atomicControlMode")
+            Log.d(TAG, "signals rts=$signalRts dtr=$signalDtr mode=$mode")
             "ok"
         } catch (e: Exception) {
             Log.e(TAG, "setSignals error", e)
@@ -850,25 +878,24 @@ h = h.replace("    erase.disabled = false;", "    erase.disabled = true;")
 # write NeuroWatch OS into an inactive OTA app partition, then switch otadata.
 # Existing bootloader, partition table, and currently running app are preserved.
 safe_ota_helpers = r'''
-async function connectRomWithSignalSequence(name, steps, attempts = 6) {
+async function connectRomWithSignalSequence(name, signalMode, steps, attempts = 3) {
   const serialPort = new AndroidSerialPort();
   const res = Android.connect();
   if (res !== 'ok') throw new Error(res);
-  log('USB-порт открыт; atomic DTR/RTS ROM reset: ' + name, 'info');
+
+  let modeResult = Android.setSignalMode(signalMode);
+  if (modeResult && modeResult !== 'ok') throw new Error(modeResult);
+  log('ROM reset: ' + name + ' [signalMode=' + signalMode + ']', 'info');
 
   if (Android.clearInput) Android.clearInput();
-  let signalResult = Android.setSignals(0, 0);
-  if (signalResult && signalResult !== 'ok') throw new Error(signalResult);
-  await new Promise(r => setTimeout(r, 100));
-
   for (const [rts, dtr, delayMs] of steps) {
-    signalResult = Android.setSignals(rts, dtr);
+    const signalResult = Android.setSignals(rts, dtr);
     if (signalResult && signalResult !== 'ok') throw new Error(signalResult);
-    await new Promise(r => setTimeout(r, delayMs));
+    if (delayMs) await new Promise(r => setTimeout(r, delayMs));
   }
 
   if (Android.clearInput) Android.clearInput();
-  await new Promise(r => setTimeout(r, 120));
+  await new Promise(r => setTimeout(r, 100));
 
   const transport = new esptool.Transport(serialPort, false);
   const loader = new esptool.ESPLoader({ transport, baudrate: 115200, terminal });
@@ -877,12 +904,9 @@ async function connectRomWithSignalSequence(name, steps, attempts = 6) {
   loader.info('Chip is ' + chip);
   if (loader.chip.postConnect) await loader.chip.postConnect(loader);
 
-  // esptool-js 0.6.1 sends only 4 bytes for SPI_ATTACH. Classic ESP32
-  // ROM expects 8 bytes: uint32 hspi_arg + is_legacy + 3 reserved bytes.
-  // A short packet caused the exact post-detection timeout seen on the watch.
   await attachEsp32FlashRom(loader);
-  log('SPI Flash подключена к ROM корректным 8-байтным пакетом.', 'ok');
-  return { loader, serialPort, chip };
+  log('ROM bootloader + SPI Flash: OK', 'ok');
+  return { loader, serialPort, chip, resetStrategy: name };
 }
 
 async function openChipRom() {
@@ -890,58 +914,91 @@ async function openChipRom() {
   const pid = Android.usbProductId();
 
   if (vid === 0x1A86 && pid === 0x55D4) {
-    // First try the current state without a reset. This recovers cleanly if a
-    // previous attempt already left the ESP32 in ROM download mode.
+    // Recover immediately if an earlier attempt already left ESP32 in ROM mode.
     try {
       setProgress('Проверяем текущий режим ESP32…', 1);
       const serialPort = new AndroidSerialPort();
       const res = Android.connect();
       if (res !== 'ok') throw new Error(res);
+      Android.setSignalMode(1);
       if (Android.clearInput) Android.clearInput();
       const transport = new esptool.Transport(serialPort, false);
       const loader = new esptool.ESPLoader({ transport, baudrate: 115200, terminal });
-      await loader.connect('no_reset', 3);
+      await loader.connect('no_reset', 2);
       const chip = await loader.chip.getChipDescription(loader);
       if (loader.chip.postConnect) await loader.chip.postConnect(loader);
       await attachEsp32FlashRom(loader);
-      log('ESP32 уже был доступен в ROM bootloader; SPI Flash подключена.', 'ok');
-      return { loader, serialPort, chip };
+      log('ESP32 уже в ROM bootloader.', 'ok');
+      return { loader, serialPort, chip, resetStrategy: 'already-in-rom' };
     } catch (e) {
-      log('Текущий режим не bootloader — выполняю автоматический reset.', 'info');
-      try { Android.disconnect(); } catch(_) {}
-      await new Promise(r => setTimeout(r, 400));
+      log('Текущий режим: обычная система. Пробуем безопасный reset.', 'info');
+      try { Android.disconnect(); } catch (_) {}
+      await new Promise(r => setTimeout(r, 250));
     }
 
-    // Espressif classic sequence: D0/R1 -> D1/R0 -> D0/R0.
-    // On this CH9102 board the exact sequence worked previously but was
-    // intermittent when DTR/RTS were sent as two USB requests. v1.2 sends
-    // each pair atomically and retries with progressively longer settling.
-    const profiles = [
-      ['classic-fast',   [[1,0,100],[0,1,70],[0,0,260]]],
-      ['classic-normal', [[1,0,150],[0,1,100],[0,0,450]]],
-      ['classic-long',   [[1,0,250],[0,1,150],[0,0,800]]],
+    // signalMode:
+    // 1 = serial-driver sequential writes (Espressif ClassicReset)
+    // 2 = CDC atomic SET_CONTROL_LINE_STATE
+    // 3 = WCH CH9102 vendor request 0xA4
+    //
+    // The first CDC profile is the exact three-phase sequence which already
+    // identified this physical ESP32-PICO-D4 in an earlier hardware test.
+    // The remaining profiles reproduce Espressif ClassicReset/TightReset and
+    // WCH's native CH9102 control path.
+    const strategies = [
+      {
+        name: 'known-good-cdc',
+        mode: 2,
+        steps: [[1,0,120],[0,1,90],[0,0,180]]
+      },
+      {
+        name: 'espressif-classic-driver',
+        mode: 1,
+        // DTR=0; RTS=1 (reset); DTR=1; RTS=0 (boot with IO0 low); DTR=0.
+        steps: [[-1,0,10],[1,-1,140],[-1,1,10],[0,-1,80],[-1,0,180]]
+      },
+      {
+        name: 'espressif-tight-cdc',
+        mode: 2,
+        // TightReset: (DTR,RTS) 00 -> 11 -> 01 -> 10 -> 00.
+        // Array ordering here is [RTS,DTR,delay].
+        steps: [[0,0,15],[1,1,15],[1,0,140],[0,1,80],[0,0,180]]
+      },
+      {
+        name: 'wch-vendor-classic',
+        mode: 3,
+        steps: [[1,0,160],[0,1,100],[0,0,220]]
+      },
+      {
+        name: 'wch-vendor-tight',
+        mode: 3,
+        steps: [[0,0,15],[1,1,15],[1,0,180],[0,1,100],[0,0,250]]
+      },
+      {
+        name: 'espressif-classic-slow',
+        mode: 1,
+        steps: [[-1,0,20],[1,-1,300],[-1,1,20],[0,-1,180],[-1,0,350]]
+      }
     ];
 
     let lastError = null;
-    for (let cycle = 1; cycle <= 3; cycle++) {
-      for (const [profile, steps] of profiles) {
-        const name = profile + ' ' + cycle + '/3';
-        try {
-          setProgress('Входим в загрузчик: ' + name, 2);
-          return await connectRomWithSignalSequence(name, steps, 7);
-        } catch (e) {
-          lastError = e;
-          log(name + ': ' + e.message, 'err');
-          try { Android.setSignals(0, 0); } catch(_) {}
-          try { Android.disconnect(); } catch(_) {}
-          await new Promise(r => setTimeout(r, 700 + cycle * 250));
-        }
+    for (let i = 0; i < strategies.length; i++) {
+      const s = strategies[i];
+      try {
+        setProgress('ROM bootloader: ' + (i + 1) + '/' + strategies.length + ' • ' + s.name, 2);
+        return await connectRomWithSignalSequence(s.name, s.mode, s.steps, 3);
+      } catch (e) {
+        lastError = e;
+        log(s.name + ': ' + e.message, 'err');
+        try { Android.setSignals(0, 0); } catch (_) {}
+        try { Android.disconnect(); } catch (_) {}
+        await new Promise(r => setTimeout(r, 450));
       }
     }
 
     throw new Error(
-      'Автовход в ROM bootloader не удался после 9 попыток. ' +
-      'CH9102 определён, Flash не изменялась. Последняя ошибка: ' +
+      'Автовход в ROM bootloader не удался после ' + strategies.length +
+      ' разных способов управления CH9102. Flash не изменялась. Последняя ошибка: ' +
       (lastError ? lastError.message : 'unknown')
     );
   }
@@ -1452,6 +1509,10 @@ h = h.replace(
     "document.getElementById('eraseBtn').addEventListener('click', doErase);",
     "document.getElementById('eraseBtn').style.display = 'none';"
 )
+h = h.replace(
+    "    flash.disabled = false;\n    erase.disabled = true;",
+    "    flash.disabled = !window.__preflightPassed;\n    erase.disabled = true;"
+)
 
 usb_poll_marker = """if (typeof Android !== 'undefined' && Android.checkConnection) {
   if (Android.checkConnection() === 'connected') window.__usbEvent('connected');
@@ -1525,6 +1586,10 @@ function neuroWatchUsbDiagnostics() {
         '0x' + Number(x.vid).toString(16).padStart(4,'0') + ':0x' +
         Number(x.pid).toString(16).padStart(4,'0')
       ).join(', ');
+      const dot = document.getElementById('usbDot');
+      const status = document.getElementById('usbStatus');
+      dot.className = 'dot';
+      status.textContent = t().usbNone;
       out.textContent = d.count
         ? 'Часы CH9102 не найдены. Android видит: ' + all
         : 'Android не видит USB-устройств. Проверь OTG, кабель и питание.';
@@ -1533,6 +1598,10 @@ function neuroWatchUsbDiagnostics() {
       window.__preflightPassed = false;
       return d;
     }
+    const dot = document.getElementById('usbDot');
+    const status = document.getElementById('usbStatus');
+    dot.className = 'dot connected';
+    status.textContent = t().usbConnected(Android.deviceInfo());
     const driver = watch.selectedDriver || watch.defaultDriver || 'нет serial-драйвера';
     out.textContent =
       'CH9102 0x1A86:0x55D4 найден • интерфейсов: ' + watch.interfaces +
