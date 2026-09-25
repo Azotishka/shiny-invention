@@ -13,6 +13,8 @@ assert.notEqual(start, -1, 'unified USB diagnostics block is missing');
 const close = fullScript.indexOf('\n})();', start);
 assert.notEqual(close, -1, 'USB diagnostics block is not closed');
 const usbScript = fullScript.slice(start, close + '\n})();'.length);
+const requiresPreflight = usbScript.includes('flash.disabled = !window.__preflightPassed;');
+const preflightHidden = usbScript.includes("document.getElementById('preflightBtn').style.display = 'none';");
 
 const ids = [
   'usbHealthText', 'flashBtn', 'preflightBtn', 'usbPermissionBtn',
@@ -26,6 +28,7 @@ for (const id of ids) {
     disabled: false,
     className: '',
     textContent: '',
+    style: {},
     listeners,
     addEventListener(name, fn) { listeners[name] = fn; },
     fire(name) { if (listeners[name]) listeners[name](); }
@@ -107,11 +110,16 @@ intervals[0].fn();
 assert.deepEqual(events, ['connected']);
 assert.equal(window.__neuroUsbConnected, true);
 assert.equal(elements.get('preflightBtn').disabled, false);
-assert.equal(elements.get('flashBtn').disabled, true, 'flash must wait for read-only preflight');
-
-window.__preflightPassed = true;
-intervals[0].fn();
-assert.equal(elements.get('flashBtn').disabled, false);
+if (requiresPreflight) {
+  assert.equal(elements.get('flashBtn').disabled, true, 'flash must wait for read-only preflight');
+  window.__preflightPassed = true;
+  intervals[0].fn();
+  assert.equal(elements.get('flashBtn').disabled, false);
+} else {
+  assert.equal(preflightHidden, true, 'app-only updater should hide the extra preflight button');
+  assert.equal(elements.get('preflightBtn').style.display, 'none');
+  assert.equal(elements.get('flashBtn').disabled, false, 'app-only update should unlock after USB and driver are ready');
+}
 
 snapshot = { usbHost: true, count: 0, devices: [] };
 intervals[0].fn();
@@ -125,4 +133,5 @@ const callsBeforeBackgroundTick = diagnosticsCalls;
 document.hidden = true;
 intervals[0].fn();
 assert.equal(diagnosticsCalls, callsBeforeBackgroundTick, 'USB scan should pause while app is hidden');
-console.log('USB UI transitions passed: missing → permission → ready → preflight → unplugged');
+console.log('USB UI transitions passed: missing → permission → ready → unplugged' +
+  (requiresPreflight ? ' (read-only gate)' : ' (app-only updater)'));
