@@ -531,8 +531,8 @@ signals_replacement = '''    private fun isCh9102(device: UsbDevice?): Boolean =
         // WCH ch343/ch9102 driver: request 0xA4, value = ~(DTR=0x20 | RTS=0x40).
         val asserted = (if (dtr) 0x20 else 0) or (if (rts) 0x40 else 0)
         val value = asserted.inv() and 0xFFFF
-        val requestType = UsbConstants.USB_TYPE_VENDOR or
-            UsbConstants.USB_RECIP_DEVICE or UsbConstants.USB_DIR_OUT
+        // USB_RECIP_DEVICE is 0x00 on Android, so no extra flag is needed.
+        val requestType = UsbConstants.USB_TYPE_VENDOR or UsbConstants.USB_DIR_OUT
         val rc = conn.controlTransfer(requestType, 0xA4, value, 0, null, 0, 1500)
         if (rc < 0) throw IOException("WCH DTR/RTS request failed: rc=$rc")
     }
