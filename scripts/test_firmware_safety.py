@@ -18,6 +18,8 @@ class FirmwareSafetyContract(unittest.TestCase):
             "void handleButtonPress() override {", 1)[0]
         self.assertNotIn("WiFi.", block)
         self.assertNotIn("Bluetooth", block)
+        self.assertIn("WiFi.mode(WIFI_OFF);", SOURCE)
+        self.assertIn("btStop();", SOURCE)
 
     def test_single_standard_face(self):
         self.assertIn("drawStandardWallpaper()", SOURCE)
