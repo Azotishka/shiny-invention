@@ -9,6 +9,7 @@ on:
     paths:
       - 'firmware/**'
       - 'scripts/patch_neurowatch_installer.py'
+      - 'scripts/test_neurowatch_usb_ui.cjs'
       - 'scripts/patch_finalize_recovery.py'
       - '.github/workflows/android-update-v08.yml'
 
@@ -124,10 +125,21 @@ jobs:
           assert "eraseFlash()" not in do_flash
           assert "bootloader.bin" not in do_flash
           assert "partitions.bin" not in do_flash
+          assert "ПОДКЛЮЧЕНИЕ ЧАСОВ" in h
+          assert "РАЗРЕШИТЬ ДОСТУП" in h
+          assert "window.__usbEvent('disconnected')" in h
+          assert "setInterval(__refreshNeuroWatchUsb" not in h
+          assert "if (!document.hidden) neuroWatchUsbDiagnostics();" in h
+          assert h.count("setInterval(") == 1
+          assert "}, 2500);" in h
+          assert "NeuroWatch Update 0.8" in h
+          usb = Path("app/src/main/java/io/github/drakosha/espflash/UsbSerialManager.kt").read_text()
+          assert "if (defaultDriver.isNotEmpty()) defaultDriver else try" in usb
           s = h[h.index("<script>")+8:h.rindex("</script>")]
           Path("/tmp/neurowatch-v08-updater.js").write_text(s)
           PY
           node --check /tmp/neurowatch-v08-updater.js
+          node ../scripts/test_neurowatch_usb_ui.cjs /tmp/neurowatch-v08-updater.js
           test -s app/src/main/assets/app.bin
 
       - name: Build APK
@@ -137,8 +149,8 @@ jobs:
           set -euo pipefail
           gradle --no-daemon :app:assembleDebug \
             -PappId=ru.neurogazette.neurowatchupdate08 \
-            -PappLabel='NeuroWatch Update 0.7' \
-            -PversionName=0.7 \
+            -PappLabel='NeuroWatch Update 0.8' \
+            -PversionName=0.8 \
             -PversionCode=8
 
           mkdir -p ../release
