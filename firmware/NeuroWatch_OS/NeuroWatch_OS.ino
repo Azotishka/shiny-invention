@@ -567,21 +567,22 @@ class NeuroWatch : public Watchy {
     nwAppReturnToMenu = 1;
     waitAllReleased(1200);
 
-    while (true) {
-      display.setFullWindow();
-      display.fillScreen(GxEPD_WHITE);
-      display.setTextColor(GxEPD_BLACK);
-      display.drawRect(2, 2, 196, 196, GxEPD_BLACK);
-      label(12, 18, "RESET STEP COUNTER?");
-      display.drawLine(8, 32, 191, 32, GxEPD_BLACK);
-      label(18, 75, "MENU  = YES");
-      label(18, 100, "BACK  = NO");
-      label(18, 135, "CURRENT:");
-      char buf[24];
-      snprintf(buf, sizeof(buf), "%lu", (unsigned long)sensor.getCounter());
-      label(85, 135, buf);
-      display.display(false);
+    display.setFullWindow();
+    display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK);
+    display.drawRect(2, 2, 196, 196, GxEPD_BLACK);
+    label(12, 18, "RESET STEP COUNTER?");
+    display.drawLine(8, 32, 191, 32, GxEPD_BLACK);
+    label(18, 75, "MENU  = YES");
+    label(18, 100, "BACK  = NO");
+    label(18, 135, "CURRENT:");
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%lu", (unsigned long)sensor.getCounter());
+    label(85, 135, buf);
+    display.display(false);
 
+    const uint32_t started = millis();
+    while ((uint32_t)(millis() - started) < NW_EDITOR_TIMEOUT_MS) {
       if (digitalRead(MENU_BTN_PIN)) {
         waitAllReleased(1200);
         sensor.resetStepCounter();
@@ -596,6 +597,7 @@ class NeuroWatch : public Watchy {
       }
       delay(20);
     }
+    showNeuroMenu(false);
   }
 
   void showStepsCard() {
