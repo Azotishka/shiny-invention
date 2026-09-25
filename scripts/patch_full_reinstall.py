@@ -60,10 +60,10 @@ full = r'''async function doFlash() {
     log('Flash полностью очищена.', 'ok');
 
     const parts = [
-      { data: bootloader, address: 0x1000, label: 'bootloader' },
-      { data: partitions, address: 0x8000, label: 'partitions' },
-      { data: bootApp0, address: 0xE000, label: 'boot_app0' },
-      { data: app, address: 0x10000, label: 'NeuroWatch OS' },
+      { data: bootloader, address: 0x1000, label: 'bootloader', file: 'bootloader.bin' },
+      { data: partitions, address: 0x8000, label: 'partitions', file: 'partitions.bin' },
+      { data: bootApp0, address: 0xE000, label: 'boot_app0', file: 'boot_app0.bin' },
+      { data: app, address: 0x10000, label: 'NeuroWatch OS', file: 'app.bin' },
     ];
 
     setProgress('Записываем NeuroWatch OS…', 25);
@@ -74,12 +74,11 @@ full = r'''async function doFlash() {
 
     setProgress('Проверяем запись…', 88);
     for (const p of parts) {
-      const expected = String(await crypto.subtle.digest('MD5', p.data).catch(() => '') || '');
-      try {
-        const got = String(await session.loader.flashMd5sum(p.address, p.data.length)).toLowerCase();
-        log('MD5 Flash ' + p.label + ': ' + got, 'info');
-      } catch (e) {
-        log('MD5 ' + p.label + ': проверка недоступна: ' + e.message, 'info');
+      const expected = String(Android.assetMd5(p.file) || '').toLowerCase();
+      const got = String(await session.loader.flashMd5sum(p.address, p.data.length)).toLowerCase();
+      log('MD5 ' + p.label + ': ' + got, 'info');
+      if (!/^[0-9a-f]{32}$/.test(expected) || got !== expected) {
+        throw new Error('MD5 не совпадает для ' + p.label);
       }
     }
 
