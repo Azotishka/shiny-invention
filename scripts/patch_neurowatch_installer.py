@@ -312,8 +312,11 @@ find_replacement = '''    /**
                 UsbSerialProber.getDefaultProber().probeDevice(d)?.javaClass?.simpleName ?: ""
             } catch (_: Exception) { "" }
             item.put("defaultDriver", defaultDriver)
-            val selectedDriver = try { serialDriverFor(d)?.javaClass?.simpleName ?: "" }
-                catch (_: Exception) { "" }
+            // serialDriverFor() uses the same default prober; call its fallback
+            // only when the library did not recognize this USB device.
+            val selectedDriver = if (defaultDriver.isNotEmpty()) defaultDriver else try {
+                serialDriverFor(d)?.javaClass?.simpleName ?: ""
+            } catch (_: Exception) { "" }
             item.put("selectedDriver", selectedDriver)
             try { item.put("product", d.productName ?: "") } catch (_: Exception) { item.put("product", "") }
             arr.put(item)
@@ -1518,27 +1521,7 @@ usb_poll_marker = """if (typeof Android !== 'undefined' && Android.checkConnecti
   if (Android.checkConnection() === 'connected') window.__usbEvent('connected');
 }
 """
-usb_poll_replacement = """function __refreshNeuroWatchUsb() {
-  if (typeof Android === 'undefined' || !Android.checkConnection) return;
-  const state = Android.checkConnection();
-  const dot = document.getElementById('usbDot');
-  const status = document.getElementById('usbStatus');
-  const flash = document.getElementById('flashBtn');
-  if (state === 'connected') {
-    if (!dot.className.includes('connected')) window.__usbEvent('connected');
-  } else if (state === 'none') {
-    if (!dot.className.includes('connected')) {
-      dot.className = 'dot';
-      status.textContent = t().usbNone;
-      flash.disabled = true;
-      window.__preflightPassed = false;
-      const pre = document.getElementById('preflightBtn');
-      if (pre) pre.disabled = true;
-    }
-  }
-}
-__refreshNeuroWatchUsb();
-setInterval(__refreshNeuroWatchUsb, 1200);
+usb_poll_replacement = """// USB state is handled by the single diagnostics loop appended below.
 """
 if usb_poll_marker not in h:
     raise SystemExit("USB startup poll patch point not found")
@@ -1551,11 +1534,11 @@ h = h.replace(
     '''</div>
 
 <div class="card" id="usbHealthCard" style="margin-top:12px">
-  <div style="font-size:13px;font-weight:600;margin-bottom:8px">USB / ЧАСЫ</div>
+  <div style="font-size:13px;font-weight:600;margin-bottom:8px">ПОДКЛЮЧЕНИЕ ЧАСОВ</div>
   <div id="usbHealthText" style="font-size:12px;line-height:1.55;color:#aaa">Проверяем USB…</div>
   <div style="display:flex;gap:8px;margin-top:10px">
-    <button class="secondary" id="usbRefreshBtn" style="margin:0;flex:1">ПРОВЕРИТЬ USB</button>
-    <button class="secondary" id="usbPermissionBtn" style="margin:0;flex:1">РАЗРЕШИТЬ USB</button>
+    <button class="secondary" id="usbRefreshBtn" style="margin:0;flex:1">ПЕРЕСКАНИРОВАТЬ</button>
+    <button class="secondary" id="usbPermissionBtn" style="margin:0;flex:1" disabled>ЧАСЫ НЕ НАЙДЕНЫ</button>
   </div>
   <button class="secondary" id="preflightBtn" style="margin-top:8px">ПРОВЕРИТЬ ЧАСЫ БЕЗ ЗАПИСИ</button>
   <button class="secondary" id="copyDiagBtn" style="margin-top:8px">СКОПИРОВАТЬ ДИАГНОСТИКУ</button>
@@ -1567,88 +1550,159 @@ h = h.replace(
 )
 
 usb_manager_js = r'''
-function neuroWatchUsbDiagnostics() {
+(() => {
   const out = document.getElementById('usbHealthText');
   const flash = document.getElementById('flashBtn');
-  const pre = document.getElementById('preflightBtn');
-  try {
-    const d = JSON.parse(Android.usbDiagnostics());
-    if (!d.usbHost) {
-      out.textContent = 'Android сообщает: USB Host недоступен.';
-      flash.disabled = true;
-      pre.disabled = true;
-      window.__preflightPassed = false;
-      return d;
-    }
-    const watch = (d.devices || []).find(x => x.vid === 0x1A86 && x.pid === 0x55D4);
-    if (!watch) {
-      const all = (d.devices || []).map(x =>
-        '0x' + Number(x.vid).toString(16).padStart(4,'0') + ':0x' +
-        Number(x.pid).toString(16).padStart(4,'0')
-      ).join(', ');
-      const dot = document.getElementById('usbDot');
-      const status = document.getElementById('usbStatus');
-      dot.className = 'dot';
-      status.textContent = t().usbNone;
-      out.textContent = d.count
-        ? 'Часы CH9102 не найдены. Android видит: ' + all
-        : 'Android не видит USB-устройств. Проверь OTG, кабель и питание.';
-      flash.disabled = true;
-      pre.disabled = true;
-      window.__preflightPassed = false;
-      return d;
-    }
-    const dot = document.getElementById('usbDot');
-    const status = document.getElementById('usbStatus');
-    dot.className = 'dot connected';
-    status.textContent = t().usbConnected(Android.deviceInfo());
-    const driver = watch.selectedDriver || watch.defaultDriver || 'нет serial-драйвера';
-    out.textContent =
-      'CH9102 0x1A86:0x55D4 найден • интерфейсов: ' + watch.interfaces +
-      ' • разрешение: ' + (watch.permission ? 'есть' : 'нужно') +
-      ' • драйвер: ' + driver;
-    const ready = !!watch.permission && !!watch.selectedDriver;
-    pre.disabled = !ready;
-    if (!ready) window.__preflightPassed = false;
-    flash.disabled = !ready || !window.__preflightPassed;
-    return d;
-  } catch (e) {
-    out.textContent = 'Ошибка USB-диагностики: ' + e.message;
-    flash.disabled = true;
-    pre.disabled = true;
-    window.__preflightPassed = false;
-    return null;
-  }
-}
+  const preflight = document.getElementById('preflightBtn');
+  const permission = document.getElementById('usbPermissionBtn');
+  const refresh = document.getElementById('usbRefreshBtn');
+  const dot = document.getElementById('usbDot');
+  const status = document.getElementById('usbStatus');
 
-document.getElementById('usbRefreshBtn').addEventListener('click', () => {
-  neuroWatchUsbDiagnostics();
-  __refreshNeuroWatchUsb();
-});
-document.getElementById('usbPermissionBtn').addEventListener('click', () => {
-  try {
-    const r = Android.requestUsbPermission();
-    if (r === 'connected') window.__usbEvent('connected');
-    neuroWatchUsbDiagnostics();
-  } catch (e) {
-    log('USB permission: ' + e.message, 'err');
+  const originalUsbEvent = window.__usbEvent;
+  window.__neuroUsbConnected = false;
+  window.__usbEvent = function(event) {
+    if (event === 'connected') window.__neuroUsbConnected = true;
+    if (event === 'disconnected' || event === 'permission_denied') window.__neuroUsbConnected = false;
+    let result;
+    if (typeof originalUsbEvent === 'function') result = originalUsbEvent.apply(window, arguments);
+    if (event === 'connected') {
+      flash.disabled = !window.__preflightPassed;
+      const erase = document.getElementById('eraseBtn');
+      if (erase) erase.disabled = true;
+    }
+    return result;
+  };
+
+  function setUnavailable(statusText, details, isError, wasDetached) {
+    if (window.__neuroUsbConnected && wasDetached && typeof window.__usbEvent === 'function') {
+      window.__usbEvent('disconnected');
+    } else {
+      window.__neuroUsbConnected = false;
+      dot.className = isError ? 'dot error' : 'dot';
+      status.textContent = statusText;
+      flash.disabled = true;
+      if (document.getElementById('eraseBtn')) document.getElementById('eraseBtn').disabled = true;
+    }
+    dot.className = isError ? 'dot error' : 'dot';
+    status.textContent = statusText;
+    out.textContent = details;
+    flash.disabled = true;
+    if (document.getElementById('eraseBtn')) document.getElementById('eraseBtn').disabled = true;
+    preflight.disabled = true;
+    window.__preflightPassed = false;
   }
-});
-document.getElementById('preflightBtn').addEventListener('click', doReadOnlyPreflight);
-document.getElementById('copyDiagBtn').addEventListener('click', () => {
-  try {
-    const usb = Android.usbDiagnostics();
-    const visibleLog = document.getElementById('log')?.innerText || '';
-    const text = 'NeuroWatch Manager v2.0\nUSB=' + usb + '\n\nLOG:\n' + visibleLog;
-    const r = Android.copyText('NeuroWatch diagnostics', text);
-    log(r === 'ok' ? 'Диагностика скопирована в буфер обмена.' : String(r), r === 'ok' ? 'ok' : 'err');
-  } catch (e) {
-    log('Не удалось скопировать диагностику: ' + e.message, 'err');
+
+  function neuroWatchUsbDiagnostics() {
+    try {
+      const d = JSON.parse(Android.usbDiagnostics());
+      if (!d.usbHost) {
+        setUnavailable('USB Host недоступен', 'На планшете не включён режим USB Host / OTG.', true, false);
+        permission.disabled = true;
+        permission.textContent = 'USB HOST НЕДОСТУПЕН';
+        return d;
+      }
+
+      const devices = d.devices || [];
+      const watch = devices.find(x => x.vid === 0x1A86 && x.pid === 0x55D4);
+      if (!watch) {
+        const all = devices.map(x =>
+          '0x' + Number(x.vid).toString(16).padStart(4, '0') + ':0x' +
+          Number(x.pid).toString(16).padStart(4, '0')
+        ).join(', ');
+        const details = d.count
+          ? 'Часы CH9102 не найдены. Android видит: ' + all
+          : 'USB-устройства не найдены. Подключите OTG-адаптер и проверьте кабель и питание.';
+        setUnavailable('Подключите часы через USB', details, false, true);
+        permission.disabled = true;
+        permission.textContent = 'ЧАСЫ НЕ НАЙДЕНЫ';
+        return d;
+      }
+
+      const driver = watch.selectedDriver || watch.defaultDriver || '';
+      const identity = 'CH9102 0x1A86:0x55D4 • интерфейсов: ' + watch.interfaces;
+      if (!watch.permission) {
+        setUnavailable('Часы найдены — нужен доступ USB', identity + ' • подтвердите системный запрос Android.', true, false);
+        permission.disabled = false;
+        permission.textContent = 'РАЗРЕШИТЬ ДОСТУП';
+        return d;
+      }
+
+      if (!driver) {
+        setUnavailable('Часы видны, но serial-драйвер не выбран', identity + ' • скопируйте диагностику для проверки.', true, false);
+        permission.disabled = true;
+        permission.textContent = 'ДРАЙВЕР НЕ НАЙДЕН';
+        return d;
+      }
+
+      if (!window.__neuroUsbConnected && typeof window.__usbEvent === 'function') {
+        window.__usbEvent('connected');
+      }
+      window.__neuroUsbConnected = true;
+      dot.className = 'dot connected';
+      status.textContent = t().usbConnected(Android.deviceInfo());
+      out.textContent = identity + ' • доступ USB: есть • драйвер: ' + driver +
+        ' • нажмите проверку связи без записи.';
+      permission.disabled = true;
+      permission.textContent = 'ДОСТУП ВЫДАН';
+      preflight.disabled = false;
+      flash.disabled = !window.__preflightPassed;
+      if (document.getElementById('eraseBtn')) document.getElementById('eraseBtn').disabled = true;
+      return d;
+    } catch (e) {
+      setUnavailable('Не удалось проверить USB', 'Ошибка диагностики: ' + e.message, true, false);
+      permission.disabled = true;
+      permission.textContent = 'НЕТ ДАННЫХ USB';
+      return null;
+    }
   }
-});
-setInterval(neuroWatchUsbDiagnostics, 1500);
-setTimeout(neuroWatchUsbDiagnostics, 100);
+
+  let refreshing = false;
+  refresh.addEventListener('click', () => {
+    if (refreshing) return;
+    refreshing = true;
+    refresh.disabled = true;
+    try { neuroWatchUsbDiagnostics(); }
+    finally { refresh.disabled = false; refreshing = false; }
+  });
+
+  permission.addEventListener('click', () => {
+    try {
+      const result = Android.requestUsbPermission();
+      neuroWatchUsbDiagnostics();
+      if (result === 'requested') {
+        status.textContent = 'Подтвердите доступ к USB в окне Android';
+        out.textContent = 'Разрешение запрошено. После подтверждения статус обновится автоматически.';
+      }
+    } catch (e) {
+      out.textContent = 'Не удалось запросить USB-доступ: ' + e.message;
+      log('USB permission: ' + e.message, 'err');
+    }
+  });
+
+  document.getElementById('preflightBtn').addEventListener('click', doReadOnlyPreflight);
+  document.getElementById('copyDiagBtn').addEventListener('click', () => {
+    try {
+      const usb = Android.usbDiagnostics();
+      const visibleLog = document.getElementById('log')?.innerText || '';
+      const text = 'NeuroWatch Update 0.8\nUSB=' + usb + '\n\nLOG:\n' + visibleLog;
+      const result = Android.copyText('NeuroWatch diagnostics', text);
+      log(result === 'ok' ? 'Диагностика скопирована в буфер обмена.' : String(result), result === 'ok' ? 'ok' : 'err');
+    } catch (e) {
+      log('Не удалось скопировать диагностику: ' + e.message, 'err');
+    }
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) neuroWatchUsbDiagnostics();
+  });
+  setTimeout(neuroWatchUsbDiagnostics, 100);
+  setInterval(() => {
+    if (!document.hidden) neuroWatchUsbDiagnostics();
+  }, 2500);
+})();
 '''
+
 
 script_close = h.rfind("</script>")
 if script_close < 0:
