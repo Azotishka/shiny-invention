@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - neurowatch-installer-v20
+      - neurowatch-manager-v21
     paths:
       - 'firmware/**'
       - 'scripts/patch_neurowatch_installer.py'
@@ -83,7 +83,7 @@ jobs:
           cat > android-installer/app/src/main/assets/firmware.json <<'JSON'
           {
             "name": "NeuroWatch OS",
-            "version": "v2.0 Device Manager",
+            "version": "v2.1 CH9102 Recovery",
             "parts": [
               { "file": "app.bin", "offset": "0x0" }
             ]
@@ -112,7 +112,12 @@ jobs:
           assert "Bootloader, таблица разделов и текущая заводская прошивка НЕ будут перезаписаны." in h
           assert "async function makeFactoryBackup(session)" not in h
           assert "addEventListener('click', doErase)" not in h
-          assert "Автовход в ROM bootloader не удался после 9 попыток" in h
+          assert "Автовход в ROM bootloader не удался после " in h
+          assert "known-good-cdc" in h
+          assert "espressif-classic-driver" in h
+          assert "espressif-tight-cdc" in h
+          assert "wch-vendor-classic" in h
+          assert "wch-vendor-tight" in h
           assert "0x3FF5A000" in h and "0x3FF5A018" in h
           assert "putU32le(sector, 24, 0xFFFFFFFF)" in h
           assert "async function attachEsp32FlashRom(loader)" in h
@@ -133,7 +138,10 @@ jobs:
           assert ".flashSpiAttach(0)" not in safe
 
           usb = Path("app/src/main/java/io/github/drakosha/espflash/UsbSerialManager.kt").read_text()
-          assert "setBridgeSignalsAtomic" in usb
+          assert "fun setSignalMode(mode: Int): String" in usb
+          assert "setCdcSignalsAtomic" in usb
+          assert "setWchSignalsAtomic" in usb
+          assert "forcedSignalMode" in usb
           assert "controlTransfer(" in usb
           assert "requestType, 0x22" in usb
           assert "controlTransfer(requestType, 0xA4" in usb
@@ -150,6 +158,7 @@ jobs:
           bridge = Path("app/src/main/java/io/github/drakosha/espflash/JsBridge.kt").read_text()
           assert "fun requestUsbPermission(): String" in bridge
           assert "fun usbDiagnostics(): String" in bridge
+          assert "fun setSignalMode(mode: Int): String" in bridge
           assert "fun copyText(label: String, text: String): String" in bridge
           # v2 polling must not spam Android permission dialogs.
           cc_start = bridge.index("fun checkConnection(): String")
@@ -187,14 +196,15 @@ jobs:
           gradle --no-daemon :app:assembleDebug \
             -PappId=ru.neurogazette.neurowatchinstaller \
             -PappLabel='NeuroWatch Manager' \
-            -PversionName=2.0 \
-            -PversionCode=20
+            -PversionName=2.1 \
+            -PversionCode=21
           mkdir -p ../release-installer
-          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Manager-v2.0.apk
-          (cd ../release-installer && sha256sum NeuroWatch-Manager-v2.0.apk > SHA256SUMS.txt)
+          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Manager-v2.1.apk
+          (cd ../release-installer && sha256sum NeuroWatch-Manager-v2.1.apk > SHA256SUMS.txt)
           printf '%s\n' \
-            'NeuroWatch Manager v2.0 for the detected ESP32-PICO-D4 / 4MB + CH9102 platform.' \
+            'NeuroWatch Manager v2.1 for the detected ESP32-PICO-D4 / 4MB + CH9102 platform.' \
             'USB detection is diagnostic-first: raw Android enumeration is visible, USB permission is explicit, CH9102 has a CDC fallback driver, and stale USB handles are always closed before reconnect.' \
+            'Bootloader entry is adaptive: the app tries the previously proven CDC sequence, Espressif ClassicReset/TightReset patterns, and the native WCH CH9102 0xA4 DTR/RTS control path.' \
             'The app separates raw USB diagnostics from flashing: installation stays disabled until the exact watch, permission, and serial driver are all ready.' \
             'A read-only hardware preflight must successfully identify the ESP32 and validate the factory partition/OTA layout before the Install button can be enabled.' \
             'It validates security eFuses, backs up partition table + OTA metadata, writes only an inactive OTA app slot, verifies it by MD5, then switches OTA metadata.' \
@@ -204,6 +214,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NeuroWatch-Manager-Android-v2.0
+          name: NeuroWatch-Manager-Android-v2.1
           path: release-installer/
           if-no-files-found: error
