@@ -19,11 +19,11 @@ finalize = r'''async function doFlash() {
 
   let session = null;
 
-  async function verifyApp(loader, expected) {
+  async function verifyApp(loader, expected, appLength) {
     let last = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        const got = String(await loader.flashMd5sum(0x10000, app.length)).toLowerCase();
+        const got = String(await loader.flashMd5sum(0x10000, appLength)).toLowerCase();
         log('MD5 app attempt ' + attempt + ': ' + got, 'info');
         return got === expected;
       } catch (e) {
@@ -59,11 +59,11 @@ finalize = r'''async function doFlash() {
     setProgress('Проверяем уже записанную NeuroWatch OS…', 35);
     let ok = false;
     try {
-      ok = await verifyApp(session.loader, expected);
+      ok = await verifyApp(session.loader, expected, app.length);
     } catch (e) {
       log('Первый канал проверки потерян, переподключаемся: ' + e.message, 'info');
       await reconnectStub();
-      try { ok = await verifyApp(session.loader, expected); } catch (_) { ok = false; }
+      try { ok = await verifyApp(session.loader, expected, app.length); } catch (_) { ok = false; }
     }
 
     if (!ok) {
@@ -81,11 +81,11 @@ finalize = r'''async function doFlash() {
       setProgress('Финальная MD5-проверка…', 88);
       let verified = false;
       try {
-        verified = await verifyApp(session.loader, expected);
+        verified = await verifyApp(session.loader, expected, app.length);
       } catch (e) {
         log('MD5 после записи: переподключение…', 'info');
         await reconnectStub();
-        verified = await verifyApp(session.loader, expected);
+        verified = await verifyApp(session.loader, expected, app.length);
       }
       if (!verified) throw new Error('Финальная MD5-проверка app.bin не совпала.');
     }

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - neurowatch-finalize-v1
+      - neurowatch-finalize-v11
     paths:
       - 'firmware/**'
       - 'scripts/patch_neurowatch_installer.py'
@@ -82,7 +82,7 @@ jobs:
           cat > android-installer/app/src/main/assets/firmware.json <<'JSON'
           {
             "name": "NeuroWatch OS Finalize Recovery",
-            "version": "v1.0",
+            "version": "v1.1",
             "parts": [
               { "file": "app.bin", "offset": "0x10000" }
             ]
@@ -104,7 +104,9 @@ jobs:
           from pathlib import Path
           h = Path("app/src/main/assets/flash.html").read_text()
           assert "ПРОВЕРИТЬ И ЗАПУСТИТЬ NEUROWATCH OS" in h
-          assert "flashMd5sum(0x10000, app.length)" in h
+          assert "async function verifyApp(loader, expected, appLength)" in h
+          assert "flashMd5sum(0x10000, appLength)" in h
+          assert "verifyApp(session.loader, expected, app.length)" in h
           assert "writeFlashRaw(" in h
           assert "address: 0x10000" in h
           assert "Android.setSignals(1, 0)" in h
@@ -124,10 +126,10 @@ jobs:
           gradle --no-daemon :app:assembleDebug \
             -PappId=ru.neurogazette.neurowatchfinalize \
             -PappLabel='NeuroWatch Finalize' \
-            -PversionName=1.0 \
-            -PversionCode=1
+            -PversionName=1.1 \
+            -PversionCode=2
           mkdir -p ../release
-          cp app/build/outputs/apk/debug/app-debug.apk ../release/NeuroWatch-Finalize-v1.0.apk
+          cp app/build/outputs/apk/debug/app-debug.apk ../release/NeuroWatch-Finalize-v1.1.apk
           cp app/src/main/assets/app.bin ../release/app.bin
           (cd ../release && sha256sum *.apk *.bin > SHA256SUMS.txt)
           printf '%s\n' \
@@ -138,6 +140,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NeuroWatch-Finalize-v1.0
+          name: NeuroWatch-Finalize-v1.1
           path: release/
           if-no-files-found: error
