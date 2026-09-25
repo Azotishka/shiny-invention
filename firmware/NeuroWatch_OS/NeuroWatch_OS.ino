@@ -542,12 +542,12 @@ class NeuroWatch : public Watchy {
         waitAllReleased(1200);
         return 1;
       }
-      if (digitalRead(DOWN_BTN_PIN)) {
+      if (digitalRead(UP_BTN_PIN)) {
         lastAction = millis();
         waitAllReleased(1200);
         return 2;
       }
-      if (digitalRead(UP_BTN_PIN)) {
+      if (digitalRead(DOWN_BTN_PIN)) {
         lastAction = millis();
         waitAllReleased(1200);
         return 3;
