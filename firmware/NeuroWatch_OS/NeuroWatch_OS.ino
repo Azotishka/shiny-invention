@@ -2,9 +2,16 @@
 #include <Watchy.h>
 #include <Preferences.h>
 #include <WiFi.h>
+#include <BLE2902.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <string>
+#include "alarm_policy.h"
 #include "neuro_config.h"
+#include "time_sync_packet.h"
 
-// NeuroWatch OS v0.8 - one standard face, quicker settings and low-overhead daily use.
+// NeuroWatch OS v0.9 - phone time sync and clearer alarm controls.
 // Target: Watchy V2 / ESP32-PICO-D4.
 
 watchySettings nwSettings{
@@ -21,20 +28,28 @@ watchySettings nwSettings{
 
 extern bool alreadyInMenu;
 
-static constexpr uint32_t NW_PREF_MAGIC = 0x4E573038UL; // "NW08"; migrates v0.7 settings once.
+static constexpr uint32_t NW_PREF_MAGIC = 0x4E573039UL; // "NW09"; reads older saved settings.
 RTC_DATA_ATTR uint32_t nwPrefMagic = 0;
 RTC_DATA_ATTR uint8_t nwUse24h = NW_DEFAULT_24H;
 RTC_DATA_ATTR uint8_t nwDateDmy = NW_DEFAULT_DMY;
 RTC_DATA_ATTR uint8_t nwVibration = NW_DEFAULT_VIBRATION;
 RTC_DATA_ATTR uint8_t nwHourlyBuzz = NW_DEFAULT_HOURLY_BUZZ;
 RTC_DATA_ATTR uint8_t nwAlarmEnabled = NW_DEFAULT_ALARM_ENABLED;
+RTC_DATA_ATTR uint8_t nwAlarmVibration = NW_DEFAULT_ALARM_VIBRATION;
 RTC_DATA_ATTR uint8_t nwAlarmHour = NW_DEFAULT_ALARM_HOUR;
 RTC_DATA_ATTR uint8_t nwAlarmMinute = NW_DEFAULT_ALARM_MINUTE;
+RTC_DATA_ATTR int16_t nwUtcOffsetMinutes = NW_DEFAULT_TIMEZONE_MINUTES;
 RTC_DATA_ATTR uint32_t nwStepGoal = NW_STEP_GOAL;
 RTC_DATA_ATTR uint32_t nwAlarmLastDay = 0xFFFFFFFFUL;
 RTC_DATA_ATTR uint8_t nwMenuPartial = 0;
 RTC_DATA_ATTR uint8_t nwAppReturnToMenu = 0;
 RTC_DATA_ATTR uint32_t nwLastBuzzStamp = 0xFFFFFFFFUL;
+
+static portMUX_TYPE nwPhoneSyncMux = portMUX_INITIALIZER_UNLOCKED;
+static NwLocalTimeSync nwPendingPhoneTime = {};
+static volatile bool nwHasPendingPhoneTime = false;
+static volatile bool nwInvalidPhonePacket = false;
+static BLECharacteristic *nwTimeSyncStatusCharacteristic = nullptr;
 
 static void loadUserPrefs() {
   if (nwPrefMagic == NW_PREF_MAGIC) return;
@@ -46,8 +61,10 @@ static void loadUserPrefs() {
     nwVibration = prefs.getBool("vib", NW_DEFAULT_VIBRATION);
     nwHourlyBuzz = prefs.getBool("hourbuzz", NW_DEFAULT_HOURLY_BUZZ);
     nwAlarmEnabled = prefs.getBool("alarm_on", NW_DEFAULT_ALARM_ENABLED);
+    nwAlarmVibration = prefs.getBool("alarm_vib", NW_DEFAULT_ALARM_VIBRATION);
     nwAlarmHour = prefs.getUChar("alarm_h", NW_DEFAULT_ALARM_HOUR);
     nwAlarmMinute = prefs.getUChar("alarm_m", NW_DEFAULT_ALARM_MINUTE);
+    nwUtcOffsetMinutes = prefs.getShort("tz_min", NW_DEFAULT_TIMEZONE_MINUTES);
     nwStepGoal = prefs.getUInt("step_goal", NW_STEP_GOAL);
     prefs.end();
   } else {
@@ -56,12 +73,16 @@ static void loadUserPrefs() {
     nwVibration = NW_DEFAULT_VIBRATION;
     nwHourlyBuzz = NW_DEFAULT_HOURLY_BUZZ;
     nwAlarmEnabled = NW_DEFAULT_ALARM_ENABLED;
+    nwAlarmVibration = NW_DEFAULT_ALARM_VIBRATION;
     nwAlarmHour = NW_DEFAULT_ALARM_HOUR;
     nwAlarmMinute = NW_DEFAULT_ALARM_MINUTE;
+    nwUtcOffsetMinutes = NW_DEFAULT_TIMEZONE_MINUTES;
     nwStepGoal = NW_STEP_GOAL;
   }
   if (nwAlarmHour > 23) nwAlarmHour = NW_DEFAULT_ALARM_HOUR;
   if (nwAlarmMinute > 59) nwAlarmMinute = NW_DEFAULT_ALARM_MINUTE;
+  if (nwUtcOffsetMinutes < -720 || nwUtcOffsetMinutes > 840)
+    nwUtcOffsetMinutes = NW_DEFAULT_TIMEZONE_MINUTES;
   if (nwStepGoal < NW_STEP_GOAL_MIN || nwStepGoal > NW_STEP_GOAL_MAX)
     nwStepGoal = NW_STEP_GOAL;
   nwPrefMagic = NW_PREF_MAGIC;
@@ -90,6 +111,33 @@ static void saveUIntPref(const char *key, uint32_t value) {
     prefs.end();
   }
 }
+
+static bool saveShortPref(const char *key, int16_t value) {
+  Preferences prefs;
+  if (!prefs.begin("nw-os", false)) return false;
+  const bool saved = prefs.putShort(key, value) == sizeof(value);
+  prefs.end();
+  return saved;
+}
+
+class NwTimeSyncWriteCallbacks : public BLECharacteristicCallbacks {
+ public:
+  void onWrite(BLECharacteristic *characteristic) override {
+    const std::string value = characteristic->getValue();
+    NwLocalTimeSync decoded = {};
+    const bool valid = nwDecodeTimeSyncPacket(
+        reinterpret_cast<const uint8_t *>(value.data()), value.size(), decoded);
+
+    portENTER_CRITICAL(&nwPhoneSyncMux);
+    if (valid) {
+      nwPendingPhoneTime = decoded;
+      nwHasPendingPhoneTime = true;
+    } else {
+      nwInvalidPhonePacket = true;
+    }
+    portEXIT_CRITICAL(&nwPhoneSyncMux);
+  }
+};
 
 class NeuroWatch : public Watchy {
  public:
@@ -155,6 +203,9 @@ class NeuroWatch : public Watchy {
     } else {
       label(10, 153, "ALARM OFF");
     }
+    char zone[16];
+    formatUtcOffset(zone, sizeof(zone));
+    label(132, 153, zone);
 
     display.drawLine(8, 169, 191, 169, GxEPD_BLACK);
     label(10, 176, "UP:STEPS  DN:STATUS");
@@ -204,7 +255,7 @@ class NeuroWatch : public Watchy {
   }
 
  private:
-  static constexpr int MENU_COUNT = 12;
+  static constexpr int MENU_COUNT = 15;
 
   void drawStandardWallpaper() {
     display.drawRect(2, 2, 196, 196, GxEPD_BLACK);
@@ -253,6 +304,13 @@ class NeuroWatch : public Watchy {
     if (bits & 0x10) display.fillRect(x, y + mid, t, mid - t, GxEPD_BLACK);
     if (bits & 0x20) display.fillRect(x, y + t, t, mid - t, GxEPD_BLACK);
     if (bits & 0x40) display.fillRect(x + t, y + mid - t / 2, w - 2 * t, t, GxEPD_BLACK);
+  }
+
+  void formatUtcOffset(char *buf, size_t size) {
+    int offset = nwUtcOffsetMinutes;
+    const char sign = offset < 0 ? '-' : '+';
+    if (offset < 0) offset = -offset;
+    snprintf(buf, size, "UTC%c%02d:%02d", sign, offset / 60, offset % 60);
   }
 
   int batteryPercent(float voltage) {
@@ -314,18 +372,23 @@ class NeuroWatch : public Watchy {
     vibMotor(50, 4);
   }
 
-  bool maybeDailyAlarm() {
-    if (!nwAlarmEnabled || currentTime.Hour != nwAlarmHour ||
-        currentTime.Minute != nwAlarmMinute) return false;
+  void playAlarmVibration() {
+    // Two clear bursts, independent from the short button confirmation setting.
+    vibMotor(100, 10);
+    delay(250);
+    vibMotor(100, 10);
+  }
 
+  bool maybeDailyAlarm() {
     const uint32_t year = (uint32_t)tmYearToCalendar(currentTime.Year);
     const uint32_t dayStamp = ((year * 13UL + currentTime.Month) * 32UL) +
                               currentTime.Day;
-    if (dayStamp == nwAlarmLastDay) return false;
-
-    nwAlarmLastDay = dayStamp;
-    vibMotor(70, 8);
-    return true;
+    const bool triggered = nwShouldFireDailyAlarm(
+        nwAlarmEnabled, currentTime.Hour, currentTime.Minute,
+        nwAlarmHour, nwAlarmMinute, dayStamp, nwAlarmLastDay);
+    if (nwShouldVibrateAlarm(triggered, nwAlarmVibration))
+      playAlarmVibration();
+    return triggered;
   }
 
   void buzzConfirm() {
@@ -342,9 +405,12 @@ class NeuroWatch : public Watchy {
       case 5: snprintf(buf, size, "HOURLY BUZZ      %s", nwHourlyBuzz ? "ON" : "OFF"); break;
       case 6: snprintf(buf, size, "DAILY ALARM      %s", nwAlarmEnabled ? "ON" : "OFF"); break;
       case 7: snprintf(buf, size, "ALARM TIME    %02u:%02u", (unsigned)nwAlarmHour, (unsigned)nwAlarmMinute); break;
-      case 8: snprintf(buf, size, "STEP GOAL      %5lu", (unsigned long)nwStepGoal); break;
-      case 9: snprintf(buf, size, "RESET STEPS"); break;
-      case 10: snprintf(buf, size, "DIAGNOSTICS"); break;
+      case 8: snprintf(buf, size, "ALARM VIBRATION  %s", nwAlarmVibration ? "ON" : "OFF"); break;
+      case 9: snprintf(buf, size, "TEST VIBRATION"); break;
+      case 10: snprintf(buf, size, "SYNC PHONE TIME"); break;
+      case 11: snprintf(buf, size, "STEP GOAL      %5lu", (unsigned long)nwStepGoal); break;
+      case 12: snprintf(buf, size, "RESET STEPS"); break;
+      case 13: snprintf(buf, size, "DIAGNOSTICS"); break;
       default: snprintf(buf, size, "ABOUT / UPDATE"); break;
     }
   }
@@ -434,12 +500,25 @@ class NeuroWatch : public Watchy {
         editTime(true);
         return;
       case 8:
-        editStepGoal();
+        nwAlarmVibration = !nwAlarmVibration;
+        saveBoolPref("alarm_vib", nwAlarmVibration);
+        buzzConfirm();
+        showNeuroMenu(true);
         return;
       case 9:
-        resetSteps();
+        playAlarmVibration();
+        showNeuroMenu(true);
         return;
       case 10:
+        syncPhoneTime();
+        return;
+      case 11:
+        editStepGoal();
+        return;
+      case 12:
+        resetSteps();
+        return;
+      case 13:
         nwAppReturnToMenu = 1;
         showDiagnostics();
         return;
@@ -448,6 +527,135 @@ class NeuroWatch : public Watchy {
         showAbout();
         return;
     }
+  }
+
+  void showPhoneSyncState(const char *title, const char *line1, const char *line2) {
+    display.setFullWindow();
+    display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK);
+    display.drawRect(2, 2, 196, 196, GxEPD_BLACK);
+    label(10, 12, "NW://PHONE SYNC");
+    display.drawLine(8, 27, 191, 27, GxEPD_BLACK);
+    label(10, 55, title);
+    label(10, 85, line1);
+    label(10, 105, line2);
+    display.drawLine(8, 169, 191, 169, GxEPD_BLACK);
+    label(10, 181, "BACK: CANCEL / RETURN");
+    display.display(false);
+  }
+
+  void setPhoneSyncStatus(const char *status) {
+    if (!nwTimeSyncStatusCharacteristic) return;
+    nwTimeSyncStatusCharacteristic->setValue(status);
+    nwTimeSyncStatusCharacteristic->notify();
+  }
+
+  void syncPhoneTime() {
+    guiState = APP_STATE;
+    nwAppReturnToMenu = 1;
+    waitAllReleased(1500);
+
+    portENTER_CRITICAL(&nwPhoneSyncMux);
+    nwHasPendingPhoneTime = false;
+    nwInvalidPhonePacket = false;
+    portEXIT_CRITICAL(&nwPhoneSyncMux);
+
+    showPhoneSyncState("WAITING FOR PHONE", "Open NeuroWatch Connect", "Tap SYNC on your phone");
+
+    BLEDevice::init("NeuroWatch");
+    BLEServer *server = BLEDevice::createServer();
+    BLEService *service = server->createService(NW_BLE_SERVICE_UUID);
+    BLECharacteristic *timeCharacteristic = service->createCharacteristic(
+        NW_BLE_TIME_UUID,
+        BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+    nwTimeSyncStatusCharacteristic = service->createCharacteristic(
+        NW_BLE_STATUS_UUID,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+    nwTimeSyncStatusCharacteristic->addDescriptor(new BLE2902());
+    nwTimeSyncStatusCharacteristic->setValue("READY");
+    timeCharacteristic->setCallbacks(new NwTimeSyncWriteCallbacks());
+    service->start();
+
+    BLEAdvertising *advertising = BLEDevice::getAdvertising();
+    advertising->addServiceUUID(NW_BLE_SERVICE_UUID);
+    advertising->setScanResponse(true);
+    advertising->start();
+
+    const uint32_t startedAt = millis();
+    bool synced = false;
+    bool cancelled = false;
+    while ((uint32_t)(millis() - startedAt) < NW_BLE_SYNC_TIMEOUT_MS) {
+      if (digitalRead(BACK_BTN_PIN)) {
+        cancelled = true;
+        break;
+      }
+      NwLocalTimeSync incoming = {};
+      bool received = false;
+      bool invalid = false;
+      portENTER_CRITICAL(&nwPhoneSyncMux);
+      if (nwHasPendingPhoneTime) {
+        incoming = nwPendingPhoneTime;
+        nwHasPendingPhoneTime = false;
+        received = true;
+      }
+      if (nwInvalidPhonePacket) {
+        nwInvalidPhonePacket = false;
+        invalid = true;
+      }
+      portEXIT_CRITICAL(&nwPhoneSyncMux);
+
+      if (invalid) setPhoneSyncStatus("INVALID");
+      if (received) {
+        tmElements_t syncedTime = {};
+        syncedTime.Year = y2kYearToTm(incoming.year - 2000);
+        syncedTime.Month = incoming.month;
+        syncedTime.Day = incoming.day;
+        syncedTime.Hour = incoming.hour;
+        syncedTime.Minute = incoming.minute;
+        syncedTime.Second = incoming.second;
+
+        const bool offsetSaved = saveShortPref("tz_min", incoming.utcOffsetMinutes);
+        nwUtcOffsetMinutes = incoming.utcOffsetMinutes;
+        RTC.set(syncedTime);
+
+        tmElements_t readBack = {};
+        RTC.read(readBack);
+        const bool clockVerified =
+            tmYearToCalendar(readBack.Year) == incoming.year &&
+            readBack.Month == incoming.month && readBack.Day == incoming.day &&
+            readBack.Hour == incoming.hour && readBack.Minute == incoming.minute &&
+            readBack.Second == incoming.second;
+        if (offsetSaved && clockVerified) {
+          setPhoneSyncStatus("OK");
+          char zone[16];
+          formatUtcOffset(zone, sizeof(zone));
+          showPhoneSyncState("TIME UPDATED", "Phone date and time saved", zone);
+          synced = true;
+        } else {
+          setPhoneSyncStatus("ERROR");
+          showPhoneSyncState("SYNC NOT SAVED", "Check RTC / phone", "Try sync again");
+        }
+        if (synced) break;
+      }
+      delay(25);
+    }
+
+    if (synced) delay(1800); // Give the phone time to read the final status.
+    advertising->stop();
+    BLEDevice::deinit(true);
+    btStop();
+    nwTimeSyncStatusCharacteristic = nullptr;
+
+    if (!synced && cancelled) {
+      showPhoneSyncState("SYNC CANCELLED", "Bluetooth is now off", "Returning to settings");
+      delay(1000);
+    } else if (!synced) {
+      showPhoneSyncState("SYNC TIMED OUT", "Open app and retry", "Bluetooth is now off");
+      delay(1800);
+    }
+    waitAllReleased(1200);
+    RTC.read(currentTime);
+    showNeuroMenu(false);
   }
 
   void editorHeader(const char *title) {
@@ -830,6 +1038,9 @@ class NeuroWatch : public Watchy {
     label(10, 162, buf);
 
     label(10, 176, "RADIOS: OFF AT REST");
+    char zone[16];
+    formatUtcOffset(zone, sizeof(zone));
+    label(120, 176, zone);
     label(10, 188, "ANY BUTTON: BACK");
     display.display(false);
   }
@@ -846,7 +1057,7 @@ class NeuroWatch : public Watchy {
     label(10, 45, "VERSION: " NW_VERSION);
     label(10, 66, "FACE: STANDARD DAILY");
     label(10, 87, "UPDATE: USB INSTALLER");
-    label(10, 108, "WIFI/BT: DISABLED AT REST");
+    label(10, 108, "BLE: ON DEMAND ONLY");
     label(10, 139, "EDITOR KEYS:");
     label(10, 154, "UP/DN CHANGE; HOLD=FAST");
     label(10, 169, "MENU:NEXT/SAVE  BACK:CANCEL");
@@ -874,6 +1085,7 @@ NeuroWatch watch(nwSettings);
 
 void setup() {
   loadUserPrefs();
+  watch.settings.gmtOffset = (long)nwUtcOffsetMinutes * 60L;
 
   // Daily mode never needs radios. Shut them down before Watchy handles the wake
   // reason so cold boots and USB resets do not leave RF blocks powered.

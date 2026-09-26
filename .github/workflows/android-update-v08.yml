@@ -1,15 +1,14 @@
-name: NeuroWatch v0.8 USB Updater
+name: NeuroWatch v0.9 USB Updater
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - neurowatch-v08-easy-settings
       - main
+      - codex/neurowatch-ble-time-sync
     paths:
       - 'firmware/**'
       - 'scripts/patch_neurowatch_installer.py'
-      - 'scripts/test_neurowatch_usb_ui.cjs'
       - 'scripts/patch_finalize_recovery.py'
       - '.github/workflows/android-update-v08.yml'
 
@@ -27,6 +26,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Run firmware and project tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+
       - run: python -m pip install --disable-pip-version-check pyserial
 
       - uses: arduino/setup-arduino-cli@v2
@@ -42,7 +44,7 @@ jobs:
           arduino-cli lib install 'DS3232RTC@2.0.1'
           arduino-cli lib install 'WiFiManager@2.0.17'
 
-      - name: Build NeuroWatch OS v0.8 app
+      - name: Build NeuroWatch OS v0.9 app
         shell: bash
         run: |
           set -euo pipefail
@@ -70,7 +72,7 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
-      - name: Prepare v0.8 app-only updater
+      - name: Prepare v0.9 app-only updater
         shell: bash
         run: |
           set -euo pipefail
@@ -87,16 +89,16 @@ jobs:
           from pathlib import Path
           p = Path("android-installer/app/src/main/assets/flash.html")
           h = p.read_text()
-          h = h.replace("ПРОВЕРИТЬ И ЗАПУСТИТЬ NEUROWATCH OS", "ОБНОВИТЬ ДО NEUROWATCH OS v0.8")
-          h = h.replace("VERIFY & BOOT NEUROWATCH OS", "UPDATE TO NEUROWATCH OS v0.8")
-          h = h.replace("NeuroWatch OS Finalize Recovery", "NeuroWatch OS v0.8 Updater")
+          h = h.replace("ПРОВЕРИТЬ И ЗАПУСТИТЬ NEUROWATCH OS", "ОБНОВИТЬ ДО NEUROWATCH OS v0.9")
+          h = h.replace("VERIFY & BOOT NEUROWATCH OS", "UPDATE TO NEUROWATCH OS v0.9")
+          h = h.replace("NeuroWatch OS Finalize Recovery", "NeuroWatch OS v0.9 Updater")
           p.write_text(h)
           PY
 
           cat > android-installer/app/src/main/assets/firmware.json <<'JSON'
           {
-            "name": "NeuroWatch OS v0.8 Daily UX",
-            "version": "v0.8",
+            "name": "NeuroWatch OS v0.9 Phone Sync",
+            "version": "v0.9",
             "parts": [
               { "file": "app.bin", "offset": "0x10000" }
             ]
@@ -118,28 +120,17 @@ jobs:
           from pathlib import Path
           h = Path("app/src/main/assets/flash.html").read_text()
           do_flash = h[h.index("async function doFlash() {"):h.index("\nasync function doErase()", h.index("async function doFlash() {"))]
-          assert "ОБНОВИТЬ ДО NEUROWATCH OS v0.8" in h
+          assert "ОБНОВИТЬ ДО NEUROWATCH OS v0.9" in h
           assert "async function verifyApp(loader, expected, appLength)" in h
           assert "flashMd5sum(0x10000, appLength)" in h
           assert "address: 0x10000" in h
           assert "eraseFlash()" not in do_flash
           assert "bootloader.bin" not in do_flash
           assert "partitions.bin" not in do_flash
-          assert "ПОДКЛЮЧЕНИЕ ЧАСОВ" in h
-          assert "РАЗРЕШИТЬ ДОСТУП" in h
-          assert "window.__usbEvent('disconnected')" in h
-          assert "setInterval(__refreshNeuroWatchUsb" not in h
-          assert "if (!document.hidden) neuroWatchUsbDiagnostics();" in h
-          assert h.count("setInterval(") == 1
-          assert "}, 2500);" in h
-          assert "NeuroWatch Update 0.8" in h
-          usb = Path("app/src/main/java/io/github/drakosha/espflash/UsbSerialManager.kt").read_text()
-          assert "if (defaultDriver.isNotEmpty()) defaultDriver else try" in usb
           s = h[h.index("<script>")+8:h.rindex("</script>")]
-          Path("/tmp/neurowatch-v08-updater.js").write_text(s)
+          Path("/tmp/neurowatch-v09-updater.js").write_text(s)
           PY
-          node --check /tmp/neurowatch-v08-updater.js
-          node ../scripts/test_neurowatch_usb_ui.cjs /tmp/neurowatch-v08-updater.js
+          node --check /tmp/neurowatch-v09-updater.js
           test -s app/src/main/assets/app.bin
 
       - name: Build APK
@@ -148,23 +139,23 @@ jobs:
         run: |
           set -euo pipefail
           gradle --no-daemon :app:assembleDebug \
-            -PappId=ru.neurogazette.neurowatchupdate08 \
-            -PappLabel='NeuroWatch Update 0.8' \
-            -PversionName=0.8 \
-            -PversionCode=8
+            -PappId=ru.neurogazette.neurowatchupdate09 \
+            -PappLabel='NeuroWatch Update 0.9' \
+            -PversionName=0.9 \
+            -PversionCode=9
 
           mkdir -p ../release
-          cp app/build/outputs/apk/debug/app-debug.apk ../release/NeuroWatch-Updater-v0.8.apk
-          cp app/src/main/assets/app.bin ../release/NeuroWatch-OS-v0.8-app.bin
+          cp app/build/outputs/apk/debug/app-debug.apk ../release/NeuroWatch-Updater-v0.9.apk
+          cp app/src/main/assets/app.bin ../release/NeuroWatch-OS-v0.9-app.bin
           (cd ../release && sha256sum *.apk *.bin > SHA256SUMS.txt)
           printf '%s\n' \
-            'App-only update to NeuroWatch OS v0.8 Daily UX.' \
+            'App-only update to NeuroWatch OS v0.9 Phone Sync.' \
             'The updater does not erase the 4MB flash and does not rewrite the bootloader or partition table.' \
             'It verifies the new app by MD5 and then performs a normal boot reset.' \
             > ../release/READ_FIRST.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NeuroWatch-Updater-v0.8
+          name: NeuroWatch-Updater-v0.9
           path: release/
           if-no-files-found: error

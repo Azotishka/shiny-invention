@@ -1,30 +1,26 @@
-# NeuroWatch OS v0.8 — quick controls
+# NeuroWatch OS v0.9 — краткая инструкция
 
-## Watch face and menu
+## Настройка времени
 
-- **MENU** opens settings.
-- **UP / DOWN** moves through the menu.
-- **MENU** opens the selected setting; **BACK** returns to the watch face.
-- On the watch face, **UP** opens steps and **DOWN** opens status.
+1. На часах открой **MENU → SYNC PHONE TIME**.
+2. Открой NeuroWatch Connect на iPhone или Android и нажми синхронизацию.
+3. Оставь часы на экране синхронизации до подтверждения.
 
-## Setting time and date
+Часы копируют дату, местное время и текущий часовой пояс телефона. Начальное смещение — UTC+05:00 (Екатеринбург). После смены часового пояса или перехода на летнее/зимнее время синхронизируй часы снова. Bluetooth включается только на время этой операции и отключается при успехе, отмене или через 60 секунд.
 
-- In an editor, tap **UP / DOWN** to change the selected value by one.
-- Hold **UP / DOWN** for a larger step: hours by 5, minutes by 10, days by 7, months by 3, and years by 10.
-- **MENU** moves to the next field; on the last field, it saves.
-- **BACK** cancels. An idle editor cancels after 60 seconds.
-- The date editor follows the selected DD.MM or MM/DD format.
+## Экран и меню
 
-## Added tools
+- На циферблате нажми **MENU**, чтобы открыть настройки; **UP / DOWN** перемещают выбор.
+- На циферблате **UP** открывает шаги, а **DOWN** — статус.
+- В редакторе нажимай **UP / DOWN** для изменения значения; удерживай кнопку для ускоренного шага.
+- **MENU** переходит к следующему полю и сохраняет последнее; **BACK** отменяет.
+- Редактор сам закроется после 60 секунд бездействия.
 
-- Set a daily vibration alarm and its time. The alarm is haptic; it has no sound.
-- Set the step goal from 1,000 to 30,000, in 500-step increments. Holding a button changes it by 2,500.
-- Existing settings such as 12/24-hour time, date format, button vibration, and hourly vibration are retained after updating.
+## Будильник и настройки
 
-## Power and display
+- **DAILY ALARM** включает или выключает будильник; в **ALARM TIME** задаётся время.
+- **ALARM VIBRATION** отдельно включает вибрацию будильника; **TEST VIBRATION** проверяет мотор.
+- **24H MODE**, **DATE FORMAT**, вибрация кнопок и почасовой сигнал настраиваются независимо.
+- Цель шагов меняется от 1 000 до 30 000 с шагом 500.
 
-- The OS keeps one standard monochrome wallpaper.
-- Wi-Fi and Bluetooth remain off during normal use; settings are cached in RTC memory between wakeups.
-- Menu/editor screens use partial refreshes, with bounded full refreshes to limit ghosting.
-
-This build targets Watchy V2 with ESP32-PICO-D4 and 4 MB Flash. It is an app-only update; it does not erase Flash or replace the bootloader or partition table.
+Один стандартный монохромный циферблат выбран по умолчанию. Wi-Fi и Bluetooth остаются выключенными в обычном режиме. Обновляй часы app-only прошивкой для Watchy V2 / ESP32-PICO-D4 с 4 МБ Flash; этот файл не заменяет загрузчик или таблицу разделов.

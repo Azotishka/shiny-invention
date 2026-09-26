@@ -1,0 +1,130 @@
+name: NeuroWatch v0.9 Phone Sync
+
+on:
+  push:
+    paths:
+      - 'firmware/**'
+      - 'scripts/**'
+      - 'mobile/**'
+      - 'docs/superpowers/**'
+      - '.github/workflows/neurowatch-connect-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  firmware-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run firmware and project tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+
+      - uses: arduino/setup-arduino-cli@v2
+
+      - name: Install pinned Watchy toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          INDEX=https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index --additional-urls "$INDEX"
+          arduino-cli core install esp32:esp32@2.0.15 --additional-urls "$INDEX"
+          arduino-cli lib install 'Watchy@1.4.7'
+          arduino-cli lib install 'DS3232RTC@2.0.1'
+          arduino-cli lib install 'WiFiManager@2.0.17'
+
+      - name: Compile and validate Watchy app image
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build release
+          arduino-cli compile \
+            --fqbn 'esp32:esp32:watchy:Revision=v20,PartitionScheme=min_spiffs' \
+            --build-path "$PWD/build" firmware/NeuroWatch_OS
+          test -s build/NeuroWatch_OS.ino.bin
+          python3 scripts/check_ota.py build/NeuroWatch_OS.ino.bin
+          cp build/NeuroWatch_OS.ino.bin release/NeuroWatch-OS-v0.9-Watchy-V2-APP.bin
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Test and build Android companion
+        working-directory: mobile/android
+        run: |
+          set -euo pipefail
+          gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk ../../release/NeuroWatch-Connect-Android-v0.9.apk
+
+      - name: Write release notes and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > release/QUICK_START_RU.md <<'TEXT'
+          1. Установи NeuroWatch-Connect-Android-v0.9.apk.
+          2. На часах открой MENU -> SYNC PHONE TIME.
+          3. В приложении нажми «Подключить и синхронизировать».
+          4. Для первой установки прошивки используй только APP.bin и уже проверенный USB-установщик.
+          Часы принимают местное время и часовой пояс телефона. Начальное смещение — UTC+05:00 (Екатеринбург).
+          TEXT
+          sha256sum release/*.bin release/*.apk > release/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeuroWatch-v0.9-Android-and-Firmware
+          path: release/
+          if-no-files-found: error
+
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test shared iOS packet encoder
+        run: swift test --package-path mobile/ios/NeuroWatchProtocol
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate and compile iOS app
+        working-directory: mobile/ios
+        run: |
+          set -euo pipefail
+          xcodegen generate --spec project.yml
+          xcodebuild \
+            -project NeuroWatchConnect.xcodeproj \
+            -scheme NeuroWatchConnect \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package iOS project source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-ios
+          zip -r release-ios/NeuroWatch-Connect-iOS-Source.zip \
+            mobile/ios/NeuroWatchConnect.xcodeproj \
+            mobile/ios/project.yml mobile/ios/Info.plist \
+            mobile/ios/Sources mobile/ios/NeuroWatchProtocol \
+            mobile/README.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeuroWatch-Connect-iOS-Source
+          path: release-ios/NeuroWatch-Connect-iOS-Source.zip
+          if-no-files-found: error

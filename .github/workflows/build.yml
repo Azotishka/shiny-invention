@@ -1,4 +1,4 @@
-name: NeuroWatch v0.8 Easy Settings
+name: NeuroWatch v0.9 Firmware Tests
 on:
   push:
     paths:
@@ -39,11 +39,11 @@ jobs:
           IMAGE=build/NeuroWatch_OS.ino.bin
           test -s "$IMAGE"
           python3 scripts/check_ota.py "$IMAGE"
-          cp "$IMAGE" release/NeuroWatch-OS-v0.8-Watchy-V2-APP.bin
+          cp "$IMAGE" release/NeuroWatch-OS-v0.9-Watchy-V2-APP.bin
           sha256sum release/*.bin > release/SHA256SUMS.txt
-          printf '%s\n' 'v0.8 app-only image targeting Watchy V2 / ESP32-PICO-D4 with 4MB Flash. Use the NeuroWatch USB updater; bootloader and partition table are not part of this artifact.' > release/READ_BEFORE_FLASHING.txt
+          printf '%s\n' 'v0.9 app-only image targeting Watchy V2 / ESP32-PICO-D4 with 4MB Flash. Use the NeuroWatch USB updater; bootloader and partition table are not part of this artifact.' > release/READ_BEFORE_FLASHING.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: NeuroWatch-v0.8-Easy-Settings
+          name: NeuroWatch-v0.9-Firmware
           path: release/
           if-no-files-found: error

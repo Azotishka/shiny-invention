@@ -1,4 +1,4 @@
-"""Static safety/UX invariants for NeuroWatch OS v0.8."""
+"""Static safety/UX invariants for NeuroWatch OS v0.9."""
 from pathlib import Path
 import unittest
 
@@ -75,12 +75,41 @@ class FirmwareSafetyContract(unittest.TestCase):
         self.assertIn('saveBytePref("alarm_h", nwAlarmHour)', SOURCE)
         self.assertIn('saveBytePref("alarm_m", nwAlarmMinute)', SOURCE)
 
+    def test_alarm_vibration_is_independent_and_has_a_test_action(self):
+        self.assertIn("nwShouldVibrateAlarm(triggered, nwAlarmVibration)", SOURCE)
+        self.assertIn("void playAlarmVibration()", SOURCE)
+        self.assertIn('saveBoolPref("alarm_vib", nwAlarmVibration)', SOURCE)
+        self.assertIn('snprintf(buf, size, "ALARM VIBRATION', SOURCE)
+        self.assertIn('snprintf(buf, size, "TEST VIBRATION")', SOURCE)
+
+    def test_phone_time_sync_is_user_started_and_has_bounded_radio_lifetime(self):
+        self.assertIn("void syncPhoneTime()", SOURCE)
+        sync = SOURCE.split("void syncPhoneTime()", 1)[1].split(
+            "void waitAllReleased", 1)[0]
+        self.assertIn("NW_BLE_SYNC_TIMEOUT_MS", sync)
+        self.assertIn("BLEDevice::init", sync)
+        self.assertIn("BLEDevice::deinit(true)", sync)
+        self.assertIn("btStop()", sync)
+        watchface = SOURCE.split("void drawWatchFace() override {", 1)[1].split(
+            "void handleButtonPress() override {", 1)[0]
+        self.assertNotIn("BLEDevice::init", watchface)
+
+    def test_phone_sync_saves_timezone_offset_and_sets_local_rtc(self):
+        self.assertIn("NW_DEFAULT_TIMEZONE_MINUTES 300", CONFIG)
+        self.assertIn('prefs.getShort("tz_min", NW_DEFAULT_TIMEZONE_MINUTES)', SOURCE)
+        self.assertIn('prefs.putShort(key, value)', SOURCE)
+        self.assertIn('saveShortPref("tz_min", incoming.utcOffsetMinutes)', SOURCE)
+        self.assertIn("nwDecodeTimeSyncPacket", SOURCE)
+        self.assertIn("RTC.set(syncedTime)", SOURCE)
+
     def test_existing_v07_preferences_are_migrated(self):
         self.assertIn('prefs.getBool("24h", NW_DEFAULT_24H)', SOURCE)
         self.assertIn('prefs.getBool("dmy", NW_DEFAULT_DMY)', SOURCE)
         self.assertIn('prefs.getBool("vib", NW_DEFAULT_VIBRATION)', SOURCE)
         self.assertIn('prefs.getBool("hourbuzz", NW_DEFAULT_HOURLY_BUZZ)', SOURCE)
-        self.assertIn('NW_PREF_MAGIC = 0x4E573038UL', SOURCE)
+        self.assertIn('NW_PREF_MAGIC = 0x4E573039UL', SOURCE)
+        self.assertIn('prefs.getBool("alarm_vib", NW_DEFAULT_ALARM_VIBRATION)', SOURCE)
+        self.assertIn('prefs.getShort("tz_min", NW_DEFAULT_TIMEZONE_MINUTES)', SOURCE)
 
     def test_hourly_buzz_is_guarded_against_repeat(self):
         self.assertIn("nwHourlyBuzz", SOURCE)

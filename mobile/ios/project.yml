@@ -1,0 +1,25 @@
+name: NeuroWatchConnect
+options:
+  deploymentTarget:
+    iOS: "16.0"
+packages:
+  NeuroWatchProtocol:
+    path: NeuroWatchProtocol
+targets:
+  NeuroWatchConnect:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    info:
+      path: Info.plist
+    dependencies:
+      - package: NeuroWatchProtocol
+        product: NeuroWatchProtocol
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ru.neurogazette.neurowatchconnect
+        PRODUCT_NAME: NeuroWatch Connect
+        SWIFT_VERSION: "5.9"
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        TARGETED_DEVICE_FAMILY: "1"
