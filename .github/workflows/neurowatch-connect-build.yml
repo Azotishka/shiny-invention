@@ -120,8 +120,12 @@ jobs:
           zip -r release-ios/NeuroWatch-Connect-iOS-Source.zip \
             mobile/ios/NeuroWatchConnect.xcodeproj \
             mobile/ios/project.yml mobile/ios/Info.plist \
-            mobile/ios/Sources mobile/ios/NeuroWatchProtocol \
+            mobile/ios/Sources \
+            mobile/ios/NeuroWatchProtocol/Package.swift \
+            mobile/ios/NeuroWatchProtocol/Sources \
+            mobile/ios/NeuroWatchProtocol/Tests \
             mobile/README.md
+          test "$(du -m release-ios/NeuroWatch-Connect-iOS-Source.zip | cut -f1)" -lt 10
 
       - uses: actions/upload-artifact@v4
         with:
