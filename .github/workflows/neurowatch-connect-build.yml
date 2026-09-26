@@ -24,6 +24,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install ESP32 esptool dependency
+        run: python3 -m pip install --disable-pip-version-check pyserial
+
       - name: Run firmware and project tests
         run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
 
