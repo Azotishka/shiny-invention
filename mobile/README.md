@@ -1,21 +1,21 @@
 # NeuroWatch Connect
 
-NeuroWatch Connect synchronizes the watch's date, local time, and UTC offset from the phone. It is separate from the existing USB firmware updater.
+NeuroWatch Connect передаёт часам дату, местное время и смещение часового пояса телефона. Интерфейс приложения локализован на русский. Приложение не связано с USB-обновителем прошивки.
 
-## Use
+## Синхронизация
 
-1. On the watch, open **MENU → SYNC PHONE TIME**.
-2. Open NeuroWatch Connect on the phone and tap **Synchronize**.
-3. Keep the watch on its sync screen until the phone reports success.
+1. На часах открой **МЕНЮ → СИНХРОН. С ТЕЛЕФОНОМ**.
+2. Открой NeuroWatch Connect на телефоне и нажми **Подключить и синхронизировать**.
+3. Оставь часы на экране синхронизации, пока приложение не подтвердит результат.
 
-The watch's default offset is UTC+05:00 (Yekaterinburg). On synchronization, the phone's current local date/time and current offset replace that setting. After changing the phone's timezone, synchronize again. The watch advertises for at most 60 seconds and disables BLE when the session ends.
+По умолчанию часы используют UTC+05:00 (Екатеринбург). При синхронизации телефон передаёт текущую местную дату, время и смещение. После смены часового пояса синхронизируй часы повторно. Bluetooth на часах включается только на время сеанса, не более 60 секунд.
 
-## Android build
+## Сборка Android
 
-Open `mobile/android` in Android Studio, or run `gradle :app:testDebugUnitTest :app:assembleDebug` with JDK 17 and Android SDK 35. The APK is produced at `app/build/outputs/apk/debug/app-debug.apk`.
+Открой `mobile/android` в Android Studio или выполни `gradle :app:testDebugUnitTest :app:assembleDebug` с JDK 17 и Android SDK 35. APK появится в `app/build/outputs/apk/debug/app-debug.apk`.
 
-## iPhone build
+## Сборка для iPhone
 
-On a Mac with Xcode and XcodeGen installed, run `xcodegen generate --spec mobile/ios/project.yml` from the repository root, open `mobile/ios/NeuroWatchConnect.xcodeproj`, select a signing team, and run it on the iPhone. The app requires iOS 16 or later and Bluetooth permission.
+На Mac с Xcode и XcodeGen выполни из корня репозитория `xcodegen generate --spec mobile/ios/project.yml`, открой `mobile/ios/NeuroWatchConnect.xcodeproj`, выбери команду подписи и запусти приложение на iPhone. Нужны iOS 16 или новее и разрешение на Bluetooth.
 
-The `NeuroWatchProtocol` Swift package contains the byte-compatible packet encoder and its golden-vector tests.
+Пакет Swift `NeuroWatchProtocol` содержит совместимый кодировщик пакетов и проверочные тесты.
