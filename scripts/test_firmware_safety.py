@@ -78,9 +78,35 @@ class FirmwareSafetyContract(unittest.TestCase):
     def test_alarm_vibration_is_independent_and_has_a_test_action(self):
         self.assertIn("nwShouldVibrateAlarm(triggered, nwAlarmVibration)", SOURCE)
         self.assertIn("void playAlarmVibration()", SOURCE)
+
+    def test_haptics_use_full_motor_pulses_and_a_testable_alarm_pattern(self):
+        self.assertIn("vibMotor(100, 20)", SOURCE)
+        self.assertIn("vibMotor(75, 4)", SOURCE)
+        self.assertIn("void testVibration()", SOURCE)
+
+    def test_russian_ui_has_cyrillic_font_and_saved_language_switch(self):
+        self.assertIn("U8G2_FOR_ADAFRUIT_GFX", SOURCE)
+        self.assertIn("u8g2_font_5x8_t_cyrillic", SOURCE)
+        self.assertIn('prefs.getBool("lang_ru", true)', SOURCE)
+        self.assertIn("ЯЗЫК: РУССКИЙ", SOURCE)
+        self.assertIn("СИНХРОНИЗАЦИЯ", SOURCE)
+
+    def test_dark_theme_is_persistent_and_used_by_the_full_ui(self):
+        self.assertIn('prefs.getBool("dark", false)', SOURCE)
+        self.assertIn("uint16_t foregroundColor() const", SOURCE)
+        self.assertIn("uint16_t backgroundColor() const", SOURCE)
+        self.assertIn('saveBoolPref("dark", nwDarkTheme)', SOURCE)
+
+    def test_low_power_games_are_available_from_the_menu(self):
+        self.assertIn('"ИГРА: КУБИК"', SOURCE)
+        self.assertIn('"ИГРА: РЕАКЦИЯ"', SOURCE)
+        self.assertIn("void playDiceGame()", SOURCE)
+        self.assertIn("void playReactionGame()", SOURCE)
         self.assertIn('saveBoolPref("alarm_vib", nwAlarmVibration)', SOURCE)
-        self.assertIn('snprintf(buf, size, "ALARM VIBRATION', SOURCE)
-        self.assertIn('snprintf(buf, size, "TEST VIBRATION")', SOURCE)
+        self.assertIn('"ВИБРОБУДИЛЬНИК: %s"', SOURCE)
+        self.assertIn('"ПРОВЕРИТЬ ВИБРАЦИЮ"', SOURCE)
+        self.assertIn('saveUShortPref("rx_best", nwBestReactionMs)', SOURCE)
+        self.assertIn('prefs.getUShort("rx_best", 0)', SOURCE)
 
     def test_phone_time_sync_is_user_started_and_has_bounded_radio_lifetime(self):
         self.assertIn("void syncPhoneTime()", SOURCE)
@@ -107,7 +133,7 @@ class FirmwareSafetyContract(unittest.TestCase):
         self.assertIn('prefs.getBool("dmy", NW_DEFAULT_DMY)', SOURCE)
         self.assertIn('prefs.getBool("vib", NW_DEFAULT_VIBRATION)', SOURCE)
         self.assertIn('prefs.getBool("hourbuzz", NW_DEFAULT_HOURLY_BUZZ)', SOURCE)
-        self.assertIn('NW_PREF_MAGIC = 0x4E573039UL', SOURCE)
+        self.assertIn('NW_PREF_MAGIC = 0x4E573130UL', SOURCE)
         self.assertIn('prefs.getBool("alarm_vib", NW_DEFAULT_ALARM_VIBRATION)', SOURCE)
         self.assertIn('prefs.getShort("tz_min", NW_DEFAULT_TIMEZONE_MINUTES)', SOURCE)
 
