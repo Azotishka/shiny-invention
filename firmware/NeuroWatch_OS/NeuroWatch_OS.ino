@@ -2,6 +2,10 @@
 #include <Watchy.h>
 #include <Preferences.h>
 #include <WiFi.h>
+#include <WebServer.h>
+#include <Update.h>
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
 #include <BLE2902.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -11,8 +15,9 @@
 #include "alarm_policy.h"
 #include "neuro_config.h"
 #include "time_sync_packet.h"
+#include "ota_policy.h"
 
-// NeuroWatch OS v0.9 - phone time sync and clearer alarm controls.
+// NeuroWatch OS v1.0 - large-print menus and on-demand Wi-Fi updates.
 // Target: Watchy V2 / ESP32-PICO-D4.
 
 watchySettings nwSettings{
@@ -47,7 +52,9 @@ RTC_DATA_ATTR uint16_t nwBestReactionMs = 0;
 RTC_DATA_ATTR uint32_t nwAlarmLastDay = 0xFFFFFFFFUL;
 RTC_DATA_ATTR uint8_t nwMenuPartial = 0;
 RTC_DATA_ATTR uint8_t nwEditorPartial = 0;
+RTC_DATA_ATTR uint8_t nwGamePartial = 0;
 RTC_DATA_ATTR uint8_t nwAppReturnToMenu = 0;
+RTC_DATA_ATTR uint8_t nwMenuGroup = 0;
 RTC_DATA_ATTR uint32_t nwLastBuzzStamp = 0xFFFFFFFFUL;
 
 static U8G2_FOR_ADAFRUIT_GFX nwTextRenderer;
@@ -210,7 +217,7 @@ class NeuroWatch : public Watchy {
                tmYearToCalendar(currentTime.Year));
     }
     display.fillRect(8, 85, 184, 17, foregroundColor());
-    drawTextColor(12, 90, buf, backgroundColor());
+    largeText(12, 86, buf, backgroundColor());
 
     if (!nwUse24h) {
       label(171, 29, nwText(pm ? "PM" : "AM", pm ? "ПП" : "ДП"));
@@ -225,13 +232,13 @@ class NeuroWatch : public Watchy {
       char alarm[32];
       snprintf(alarm, sizeof(alarm), nwText("ALARM %02u:%02u", "БУД %02u:%02u"),
                (unsigned)nwAlarmHour, (unsigned)nwAlarmMinute);
-      label(10, 153, alarm);
+      largeLabel(10, 151, alarm);
     } else {
-      label(10, 153, nwText("ALARM OFF", "БУДИЛЬНИК ВЫКЛ"));
+      largeLabel(10, 151, nwText("ALARM OFF", "БУД. ВЫКЛ"));
     }
     char zone[16];
     formatUtcOffset(zone, sizeof(zone));
-    label(132, 153, zone);
+    largeLabel(132, 151, zone);
 
     display.drawLine(8, 169, 191, 169, foregroundColor());
     label(10, 176, nwText("UP:STEPS  DN:STATUS", "ВВЕРХ: ШАГИ  ВНИЗ: СТАТУС"));
@@ -244,6 +251,7 @@ class NeuroWatch : public Watchy {
 
     if (guiState == WATCHFACE_STATE) {
       if (pressed & MENU_BTN_MASK) {
+        nwMenuGroup = 0;
         menuIndex = 0;
         showNeuroMenu(false);
       } else if (pressed & UP_BTN_MASK) {
@@ -258,13 +266,19 @@ class NeuroWatch : public Watchy {
       }
     } else if (guiState == MAIN_MENU_STATE) {
       if (pressed & BACK_BTN_MASK) {
-        RTC.read(currentTime);
-        showWatchFace(false);
+        if (nwMenuGroup != 0) {
+          menuIndex = nwMenuGroup - 1;
+          nwMenuGroup = 0;
+          showNeuroMenu(false);
+        } else {
+          RTC.read(currentTime);
+          showWatchFace(false);
+        }
       } else if (pressed & UP_BTN_MASK) {
-        menuIndex = (menuIndex + MENU_COUNT - 1) % MENU_COUNT;
+        menuIndex = (menuIndex + menuItemCount() - 1) % menuItemCount();
         showNeuroMenu(true);
       } else if (pressed & DOWN_BTN_MASK) {
-        menuIndex = (menuIndex + 1) % MENU_COUNT;
+        menuIndex = (menuIndex + 1) % menuItemCount();
         showNeuroMenu(true);
       } else if (pressed & MENU_BTN_MASK) {
         selectMenuItem();
@@ -290,12 +304,49 @@ class NeuroWatch : public Watchy {
     return nwDarkTheme ? GxEPD_BLACK : GxEPD_WHITE;
   }
 
-  static constexpr int MENU_COUNT = 19;
+  static constexpr int MENU_COUNT = 5;
+
+  int menuItemCount() const {
+    switch (nwMenuGroup) {
+      case 0: return MENU_COUNT;
+      case 1: return 5;  // clock
+      case 2: return 6;  // alarms and haptics
+      case 3: return 5;  // activity and utilities
+      case 4: return 5;  // games
+      default: return 4; // system
+    }
+  }
+
+  int menuActionFor(uint8_t group, int index) const {
+    static const uint8_t actions[5][6] = {
+        {0, 1, 2, 3, 10, 0},
+        {6, 7, 8, 9, 5, 4},
+        {11, 12, 22, 23, 13, 0},
+        {17, 18, 19, 20, 21, 0},
+        {24, 15, 16, 14, 0, 0},
+    };
+    return actions[group - 1][index];
+  }
+
+  int menuAction() const {
+    return menuActionFor(nwMenuGroup, menuIndex);
+  }
+
+  const char *menuTitle() const {
+    switch (nwMenuGroup) {
+      case 1: return nwText("CLOCK", "ВРЕМЯ");
+      case 2: return nwText("ALARM", "СИГНАЛЫ");
+      case 3: return nwText("ACTIVITY", "АКТИВНОСТЬ");
+      case 4: return nwText("GAMES", "ИГРЫ");
+      case 5: return nwText("SYSTEM", "СИСТЕМА");
+      default: return nwText("NEUROWATCH", "НЕЙРОЧАСЫ");
+    }
+  }
 
   void drawStandardWallpaper() {
     display.drawRect(2, 2, 196, 196, foregroundColor());
     display.fillRect(7, 6, 186, 19, foregroundColor());
-    drawTextColor(10, 11, nwText("NEUROWATCH // DAILY", "НЕЙРОЧАСЫ // ДЕНЬ"), backgroundColor());
+    largeText(10, 8, nwText("NEUROWATCH", "НЕЙРОЧАСЫ"), backgroundColor());
     drawTextColor(159, 11, "OS " NW_VERSION, backgroundColor());
 
     // One built-in standard wallpaper: light technical corner marks.
@@ -311,6 +362,19 @@ class NeuroWatch : public Watchy {
 
   void label(int x, int y, const char *s) {
     drawTextColor(x, y, s, foregroundColor());
+  }
+
+  void largeText(int x, int y, const char *s, uint16_t color) {
+    nwTextRenderer.setFontMode(1);
+    nwTextRenderer.setFontDirection(0);
+    nwTextRenderer.setForegroundColor(color);
+    nwTextRenderer.setFont(u8g2_font_6x13B_t_cyrillic);
+    nwTextRenderer.setCursor(x, y + 12);
+    nwTextRenderer.print(s);
+  }
+
+  void largeLabel(int x, int y, const char *s) {
+    largeText(x, y, s, foregroundColor());
   }
 
   void drawTextColor(int x, int y, const char *s, uint16_t color) {
@@ -387,7 +451,7 @@ class NeuroWatch : public Watchy {
     } else {
       snprintf(buf, sizeof(buf), nwText("BAT %3d%%", "АКБ %3d%%"), pct);
     }
-    label(x, y, buf);
+    largeLabel(x, y - 2, buf);
 
     display.drawRect(72, y - 2, 82, 10, foregroundColor());
     display.fillRect(154, y + 1, 3, 4, foregroundColor());
@@ -399,7 +463,7 @@ class NeuroWatch : public Watchy {
     if (voltage > 0.0f && voltage < 6.0f) {
       const unsigned cv = (unsigned)(voltage * 100.0f + 0.5f);
       snprintf(buf, sizeof(buf), "%u.%02uV", cv / 100, cv % 100);
-      label(163, y, buf);
+      largeLabel(163, y - 2, buf);
     }
   }
 
@@ -407,7 +471,7 @@ class NeuroWatch : public Watchy {
     const uint32_t steps = sensor.getCounter();
     char buf[32];
     snprintf(buf, sizeof(buf), nwText("STEPS %lu", "ШАГИ %lu"), (unsigned long)steps);
-    label(x, y, buf);
+    largeLabel(x, y - 2, buf);
 
     const uint32_t capped = steps > nwStepGoal ? nwStepGoal : steps;
     display.drawRect(82, y - 2, 109, 10, foregroundColor());
@@ -444,11 +508,11 @@ class NeuroWatch : public Watchy {
     display.fillScreen(backgroundColor());
     display.setTextColor(foregroundColor());
     display.drawRect(2, 2, 196, 196, foregroundColor());
-    label(10, 12, title);
+    largeLabel(10, 9, title);
     display.drawLine(8, 28, 191, 28, foregroundColor());
-    label(12, 54, line1);
-    label(12, 82, line2);
-    label(12, 110, line3);
+    largeLabel(12, 50, line1);
+    largeLabel(12, 80, line2);
+    largeLabel(12, 110, line3);
     label(12, 181, nwText("MENU: SELECT   BACK: EXIT", "МЕНЮ: ВЫБОР   НАЗАД: ВЫХОД"));
   }
 
@@ -607,6 +671,387 @@ class NeuroWatch : public Watchy {
     showNeuroMenu(false);
   }
 
+  int waitFourButtons(uint32_t timeoutMs) {
+    const uint32_t started = millis();
+    while ((uint32_t)(millis() - started) < timeoutMs) {
+      int result = 0;
+      if (digitalRead(MENU_BTN_PIN)) result = 1;
+      else if (digitalRead(UP_BTN_PIN)) result = 2;
+      else if (digitalRead(DOWN_BTN_PIN)) result = 3;
+      else if (digitalRead(BACK_BTN_PIN)) result = 4;
+      if (result) {
+        waitAllReleased(1000);
+        return result;
+      }
+      delay(25);
+    }
+    return 0;
+  }
+
+  void presentGameFrame() {
+    const bool partial = nwGamePartial < 7;
+    nwGamePartial = partial ? nwGamePartial + 1 : 0;
+    display.display(partial);
+  }
+
+  void playCoinGame() {
+    guiState = APP_STATE;
+    nwAppReturnToMenu = 1;
+    waitAllReleased(1200);
+    nwGamePartial = 0;
+    while (true) {
+      const bool heads = (esp_random() & 1U) != 0;
+      drawGameFrame(nwText("COIN TOSS", "МОНЕТКА"),
+                    nwText(heads ? "HEADS" : "TAILS", heads ? "ОРЁЛ" : "РЕШКА"),
+                    nwText("MENU: TOSS AGAIN", "МЕНЮ: БРОСИТЬ ЕЩЁ"),
+                    nwText("BACK: EXIT", "НАЗАД: ВЫХОД"));
+      display.drawCircle(100, 145, 20, foregroundColor());
+      display.drawCircle(100, 145, 15, foregroundColor());
+      presentGameFrame();
+      if (waitGameButton(60000UL) != 1) break;
+      buzzConfirm();
+    }
+    showNeuroMenu(false);
+  }
+
+  void playGuessGame() {
+    guiState = APP_STATE;
+    nwAppReturnToMenu = 1;
+    waitAllReleased(1200);
+    nwGamePartial = 0;
+    uint8_t secret = (uint8_t)(esp_random() % 20U) + 1;
+    uint8_t guess = 10, tries = 0;
+    const char *hint = nwText("UP/DN: 1..20", "ВВЕРХ/ВНИЗ: 1..20");
+    while (true) {
+      char number[12], attempts[32];
+      snprintf(number, sizeof(number), "%u", (unsigned)guess);
+      snprintf(attempts, sizeof(attempts), nwText("TRIES: %u", "ПОПЫТОК: %u"), (unsigned)tries);
+      drawGameFrame(nwText("GUESS 1..20", "УГАДАЙ 1..20"), hint, attempts,
+                    nwText("MENU: CHECK", "МЕНЮ: ПРОВЕРИТЬ"));
+      display.setTextSize(3);
+      display.setTextColor(foregroundColor());
+      display.setCursor(72, 128);
+      display.print(number);
+      display.setTextSize(1);
+      presentGameFrame();
+      const int button = waitFourButtons(60000UL);
+      if (button == 0 || button == 4) break;
+      if (button == 2) guess = guess == 20 ? 1 : guess + 1;
+      if (button == 3) guess = guess == 1 ? 20 : guess - 1;
+      if (button == 1) {
+        ++tries;
+        if (guess == secret) {
+          drawGameFrame(nwText("YOU WON!", "УГАДАЛ!"), attempts,
+                        nwText("MENU: NEW ROUND", "МЕНЮ: НОВЫЙ РАУНД"),
+                        nwText("BACK: EXIT", "НАЗАД: ВЫХОД"));
+          presentGameFrame();
+          buzzConfirm();
+          if (waitGameButton(60000UL) != 1) break;
+          secret = (uint8_t)(esp_random() % 20U) + 1;
+          guess = 10;
+          tries = 0;
+          hint = nwText("UP/DN: 1..20", "ВВЕРХ/ВНИЗ: 1..20");
+        } else {
+          hint = nwText(guess < secret ? "HIGHER!" : "LOWER!",
+                        guess < secret ? "НУЖНО БОЛЬШЕ" : "НУЖНО МЕНЬШЕ");
+        }
+      }
+    }
+    showNeuroMenu(false);
+  }
+
+  void playMathGame() {
+    guiState = APP_STATE;
+    nwAppReturnToMenu = 1;
+    waitAllReleased(1200);
+    nwGamePartial = 0;
+    while (true) {
+      uint8_t score = 0;
+      for (uint8_t round = 0; round < 5; ++round) {
+      const uint8_t a = (uint8_t)(esp_random() % 10U) + 1;
+      const uint8_t b = (uint8_t)(esp_random() % 10U) + 1;
+      uint8_t answer = 10;
+      uint8_t attempts = 0;
+      bool solved = false;
+      while (!solved) {
+        char question[24], choice[24], progress[32];
+        snprintf(question, sizeof(question), "%u + %u = ?", (unsigned)a, (unsigned)b);
+        snprintf(choice, sizeof(choice), nwText("ANSWER: %u", "ОТВЕТ: %u"), (unsigned)answer);
+        snprintf(progress, sizeof(progress), nwText("ROUND %u/5", "РАУНД %u/5"), (unsigned)round + 1);
+        drawGameFrame(nwText("QUICK MATH", "БЫСТРЫЙ СЧЁТ"), question, choice, progress);
+        presentGameFrame();
+        const int button = waitFourButtons(60000UL);
+        if (button == 0 || button == 4) { showNeuroMenu(false); return; }
+        if (button == 2) answer = answer == 20 ? 0 : answer + 1;
+        if (button == 3) answer = answer == 0 ? 20 : answer - 1;
+        if (button == 1) {
+          ++attempts;
+          solved = answer == a + b;
+          if (solved) { if (attempts == 1) ++score; buzzConfirm(); }
+          else {
+            drawGameFrame(nwText("TRY AGAIN", "ПОПРОБУЙ ЕЩЁ"),
+                          nwText("UP/DN: CHANGE", "ВВЕРХ/ВНИЗ: ИЗМЕНИ"), "", "");
+            presentGameFrame();
+            delay(700);
+          }
+        }
+      }
+      }
+      char result[28];
+      snprintf(result, sizeof(result), nwText("SCORE: %u/5", "РЕЗУЛЬТАТ: %u/5"), (unsigned)score);
+      drawGameFrame(nwText("WELL DONE!", "ГОТОВО!"), result,
+                    nwText("MENU: PLAY AGAIN", "МЕНЮ: ЕЩЁ РАЗ"),
+                    nwText("BACK: EXIT", "НАЗАД: ВЫХОД"));
+      presentGameFrame();
+      if (waitGameButton(60000UL) != 1) break;
+    }
+    showNeuroMenu(false);
+  }
+
+  void showStopwatch() {
+    guiState = APP_STATE;
+    nwAppReturnToMenu = 1;
+    waitAllReleased(1200);
+    uint32_t elapsed = 0, started = 0, lastDraw = 0, lastInput = millis();
+    bool running = false, redraw = true;
+    uint8_t partialCount = 0;
+    while ((uint32_t)(millis() - lastInput) < 600000UL) {
+      const uint32_t now = millis();
+      if (redraw || (running && (uint32_t)(now - lastDraw) >= 5000UL)) {
+        const uint32_t shown = elapsed + (running ? (uint32_t)(now - started) : 0);
+        char time[20];
+        snprintf(time, sizeof(time), "%02lu:%02lu", (unsigned long)(shown / 60000UL),
+                 (unsigned long)((shown / 1000UL) % 60UL));
+        display.setFullWindow();
+        display.fillScreen(backgroundColor());
+        display.drawRect(2, 2, 196, 196, foregroundColor());
+        largeLabel(10, 10, nwText("STOPWATCH", "СЕКУНДОМЕР"));
+        display.setFont(nullptr);
+        display.setTextColor(foregroundColor());
+        display.setTextSize(3);
+        display.setCursor(43, 75);
+        display.print(time);
+        display.setTextSize(1);
+        largeLabel(18, 130, running ? nwText("RUNNING", "ИДЁТ")
+                                    : nwText("PAUSED", "ПАУЗА"));
+        label(10, 168, nwText("MENU: START/STOP   UP: RESET", "МЕНЮ: ПУСК/СТОП  ВВЕРХ: СБРОС"));
+        label(10, 184, nwText("BACK: EXIT", "НАЗАД: ВЫХОД"));
+        const bool partial = partialCount < 7;
+        partialCount = partial ? partialCount + 1 : 0;
+        display.display(partial);
+        lastDraw = millis();
+        redraw = false;
+      }
+      int button = 0;
+      if (digitalRead(MENU_BTN_PIN)) button = 1;
+      else if (digitalRead(UP_BTN_PIN)) button = 2;
+      else if (digitalRead(BACK_BTN_PIN)) button = 4;
+      if (button) {
+        const uint32_t pressed = millis();
+        waitAllReleased(1000);
+        lastInput = millis();
+        if (button == 4) break;
+        if (button == 1) {
+          if (running) elapsed += (uint32_t)(pressed - started);
+          else started = pressed;
+          running = !running;
+        } else if (!running) elapsed = 0;
+        redraw = true;
+      }
+      delay(30);
+    }
+    showNeuroMenu(false);
+  }
+
+  void showBreathing() {
+    guiState = APP_STATE;
+    nwAppReturnToMenu = 1;
+    waitAllReleased(1200);
+    for (uint8_t phase = 0; phase < 6; ++phase) {
+      const bool inhale = (phase % 2) == 0;
+      display.setFullWindow();
+      display.fillScreen(backgroundColor());
+      display.drawRect(2, 2, 196, 196, foregroundColor());
+      largeLabel(10, 10, nwText("BREATHING", "ДЫХАНИЕ"));
+      display.drawCircle(100, 100, inhale ? 42 : 27, foregroundColor());
+      display.drawCircle(100, 100, inhale ? 35 : 20, foregroundColor());
+      largeLabel(34, 146, inhale ? nwText("INHALE 4 SEC", "ВДОХ 4 СЕК")
+                                    : nwText("EXHALE 6 SEC", "ВЫДОХ 6 СЕК"));
+      label(10, 184, nwText("BACK: EXIT", "НАЗАД: ВЫХОД"));
+      display.display(phase < 5);
+      if (nwVibration) vibMotor(75, 2);
+      const uint32_t started = millis();
+      const uint32_t duration = inhale ? 4000UL : 6000UL;
+      while ((uint32_t)(millis() - started) < duration) {
+        if (digitalRead(BACK_BTN_PIN)) {
+          waitAllReleased(1000);
+          showNeuroMenu(false);
+          return;
+        }
+        delay(50);
+      }
+    }
+    showNeuroMenu(false);
+  }
+
+  void showWifiOtaScreen(const char *password) {
+    display.setFullWindow();
+    display.fillScreen(backgroundColor());
+    display.drawRect(2, 2, 196, 196, foregroundColor());
+    largeLabel(10, 10, nwText("WI-FI UPDATE", "ОБНОВЛЕНИЕ WI-FI"));
+    display.drawLine(8, 28, 191, 28, foregroundColor());
+    largeLabel(10, 39, "NeuroWatch-Update");
+    largeLabel(10, 67, nwText("PASSWORD:", "ПАРОЛЬ:"));
+    largeLabel(10, 84, password);
+    label(10, 112, nwText("Open Safari / Chrome:", "ОТКРОЙ SAFARI / CHROME:"));
+    largeLabel(10, 130, "192.168.4.1");
+    label(10, 166, nwText("Choose NeuroWatch .bin", "ВЫБЕРИ ФАЙЛ ПРОШИВКИ .BIN"));
+    label(10, 184, nwText("BACK: CANCEL  LIMIT: 5 MIN", "НАЗАД: ОТМЕНА  ЛИМИТ: 5 МИН"));
+    display.display(false);
+  }
+
+  void wifiOtaPortal() {
+    guiState = APP_STATE;
+    nwAppReturnToMenu = 1;
+    waitAllReleased(1200);
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *target = esp_ota_get_next_update_partition(nullptr);
+    const esp_partition_t *otaData = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, nullptr);
+    const bool hasOtaData = otaData && otaData->size >= 0x2000;
+    const int charge = batteryPercent(getBatteryVoltage());
+    if (!running || !target || target->type != ESP_PARTITION_TYPE_APP ||
+        (target->subtype != ESP_PARTITION_SUBTYPE_APP_OTA_0 &&
+         target->subtype != ESP_PARTITION_SUBTYPE_APP_OTA_1) ||
+        !nwCanStartWifiOta(running->address, target->address, target->size,
+                           ESP.getSketchSize(), hasOtaData, charge)) {
+      drawGameFrame(nwText("WI-FI UNAVAILABLE", "WI-FI НЕДОСТУПЕН"),
+                    charge < 50 ? nwText("Charge above 50%", "ЗАРЯДИ ВЫШЕ 50%")
+                                : nwText("OTA layout not ready", "НЕТ ЗАПАСНОГО РАЗДЕЛА"),
+                    nwText("Use USB installer", "ИСПОЛЬЗУЙ USB"),
+                    nwText("BACK: RETURN", "НАЗАД: В МЕНЮ"));
+      display.display(false);
+      waitFourButtons(60000UL);
+      showNeuroMenu(false);
+      return;
+    }
+
+    char password[16], token[17];
+    snprintf(password, sizeof(password), "%08lx%04lx",
+             (unsigned long)esp_random(), (unsigned long)(esp_random() & 0xffffUL));
+    snprintf(token, sizeof(token), "%08lx%08lx",
+             (unsigned long)esp_random(), (unsigned long)esp_random());
+    WiFi.mode(WIFI_AP);
+    if (!WiFi.softAP("NeuroWatch-Update", password, 1, false, 1)) {
+      WiFi.mode(WIFI_OFF);
+      drawGameFrame(nwText("WI-FI ERROR", "ОШИБКА WI-FI"),
+                    nwText("Could not start network", "НЕ ЗАПУСТИЛАСЬ СЕТЬ"),
+                    nwText("Use USB installer", "ИСПОЛЬЗУЙ USB"), "");
+      display.display(false);
+      waitFourButtons(60000UL);
+      showNeuroMenu(false);
+      return;
+    }
+
+    WebServer server(80);
+    const String updatePath = String("/update-") + token;
+    bool started = false, complete = false, reboot = false;
+    uint32_t written = 0, lastActivity = millis();
+    const char *error = "Upload incomplete";
+
+    server.on("/", HTTP_GET, [&]() {
+      lastActivity = millis();
+      String page = F("<!doctype html><html lang='ru'><head><meta charset='utf-8'>"
+                      "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                      "<title>NeuroWatch</title><style>body{font:18px system-ui;"
+                      "max-width:34em;margin:32px auto;padding:0 18px;line-height:1.5}"
+                      "button,input{font:inherit;padding:12px;margin:12px 0;max-width:100%}"
+                      "button{background:#111;color:white;border:0;border-radius:10px}"
+                      "</style></head><body><h1>Обновить NeuroWatch</h1>"
+                      "<p>Выбери файл прошивки .bin. Держи часы заряженными и рядом с телефоном."
+                      " Не закрывай страницу до сообщения об успехе.</p>"
+                      "<form method='post' action='");
+      page += updatePath;
+      page += F("' enctype='multipart/form-data'><input type='file' name='firmware' "
+                "accept='.bin' required><button type='submit'>Обновить часы</button>"
+                "</form><p>Если iPhone сообщает, что сеть без интернета, оставь подключение "
+                "и открой 192.168.4.1 в Safari.</p></body></html>");
+      server.sendHeader("Cache-Control", "no-store");
+      server.send(200, "text/html; charset=utf-8", page);
+    });
+
+    server.on(updatePath.c_str(), HTTP_POST,
+      [&]() {
+        if (!complete) {
+          server.send(400, "text/plain; charset=utf-8", String("Ошибка: ") + error);
+          return;
+        }
+        server.send(200, "text/html; charset=utf-8",
+                    "<meta charset='utf-8'><meta name='viewport' content='width=device-width'>"
+                    "<h1>Готово</h1><p>Прошивка проверена. Часы перезагружаются.</p>");
+        reboot = true;
+      },
+      [&]() {
+        HTTPUpload &upload = server.upload();
+        if (upload.status == UPLOAD_FILE_START) {
+          lastActivity = millis();
+          started = false;
+          complete = false;
+          written = 0;
+          error = "Нужен файл .bin";
+          if (!upload.filename.endsWith(".bin") || upload.name != "firmware") return;
+          if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
+            error = "Нет места для прошивки";
+            return;
+          }
+          started = true;
+        } else if (upload.status == UPLOAD_FILE_WRITE && started) {
+          lastActivity = millis();
+          if (!nwOtaChunkFits(written, upload.currentSize, target->size) ||
+              Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+            error = "Ошибка записи или файл слишком большой";
+            Update.abort();
+            started = false;
+            return;
+          }
+          written += upload.currentSize;
+        } else if (upload.status == UPLOAD_FILE_END && started) {
+          lastActivity = millis();
+          if (written >= 64UL * 1024UL && written == upload.totalSize &&
+              Update.end(true)) {
+            complete = true;
+          } else {
+            error = "Файл повреждён или не подходит";
+            Update.abort();
+          }
+          started = false;
+        } else if (upload.status == UPLOAD_FILE_ABORTED) {
+          if (started) Update.abort();
+          started = false;
+          error = "Передача прервана";
+        }
+      });
+    server.onNotFound([&]() { server.send(404, "text/plain", "Not found"); });
+    server.begin();
+    showWifiOtaScreen(password);
+    while ((uint32_t)(millis() - lastActivity) < NW_WIFI_OTA_TIMEOUT_MS) {
+      server.handleClient();
+      if (reboot) {
+        delay(600);
+        ESP.restart();
+      }
+      if (!started && digitalRead(BACK_BTN_PIN)) break;
+      delay(10);
+    }
+    if (started) Update.abort();
+    server.stop();
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_OFF);
+    waitAllReleased(1000);
+    showNeuroMenu(false);
+  }
+
   bool maybeDailyAlarm() {
     const uint32_t year = (uint32_t)tmYearToCalendar(currentTime.Year);
     const uint32_t dayStamp = ((year * 13UL + currentTime.Month) * 32UL) +
@@ -624,19 +1069,29 @@ class NeuroWatch : public Watchy {
   }
 
   void menuLabel(int item, char *buf, size_t size) {
+    if (nwMenuGroup == 0) {
+      static const char *const english[] = {
+          "CLOCK & DATE", "ALARMS & HAPTICS", "ACTIVITY & TOOLS",
+          "GAMES", "SYSTEM & UPDATE"};
+      static const char *const russian[] = {
+          "ВРЕМЯ И ДАТА", "БУДИЛЬНИК И ВИБРО", "ШАГИ И ПРИЛОЖЕНИЯ",
+          "ИГРЫ", "СИСТЕМА И ОБНОВЛЕНИЕ"};
+      snprintf(buf, size, "%s", nwText(english[item], russian[item]));
+      return;
+    }
     switch (item) {
-      case 0: snprintf(buf, size, "%s", nwText("SET TIME", "НАСТРОИТЬ ВРЕМЯ")); break;
-      case 1: snprintf(buf, size, "%s", nwText("SET DATE", "НАСТРОИТЬ ДАТУ")); break;
+      case 0: snprintf(buf, size, "%s", nwText("SET TIME", "ВРЕМЯ")); break;
+      case 1: snprintf(buf, size, "%s", nwText("SET DATE", "ДАТА")); break;
       case 2:
         snprintf(buf, size, nwText("24H MODE: %s", "24Ч ФОРМАТ: %s"),
                  nwText(nwUse24h ? "ON" : "OFF", nwUse24h ? "ВКЛ" : "ВЫКЛ"));
         break;
       case 3:
-        snprintf(buf, size, nwText("DATE FORMAT: %s", "ФОРМАТ ДАТЫ: %s"),
+        snprintf(buf, size, nwText("DATE FORMAT: %s", "ДАТА: %s"),
                  nwDateDmy ? "DD.MM" : "MM/DD");
         break;
       case 4:
-        snprintf(buf, size, nwText("BUTTON VIB: %s", "ВИБРОКНОПКИ: %s"),
+        snprintf(buf, size, nwText("BUTTON VIB: %s", "ВИБРО КНОПОК: %s"),
                  nwText(nwVibration ? "ON" : "OFF", nwVibration ? "ВКЛ" : "ВЫКЛ"));
         break;
       case 5:
@@ -655,60 +1110,68 @@ class NeuroWatch : public Watchy {
         snprintf(buf, size, nwText("ALARM VIB: %s", "ВИБРОБУДИЛЬНИК: %s"),
                  nwText(nwAlarmVibration ? "ON" : "OFF", nwAlarmVibration ? "ВКЛ" : "ВЫКЛ"));
         break;
-      case 9: snprintf(buf, size, "%s", nwText("TEST VIBRATION", "ПРОВЕРИТЬ ВИБРАЦИЮ")); break;
-      case 10: snprintf(buf, size, "%s", nwText("SYNC PHONE TIME", "СИНХРОН. С ТЕЛЕФОНОМ")); break;
+      case 9: snprintf(buf, size, "%s", nwText("TEST VIBRATION", "ТЕСТ ВИБРАЦИИ")); break;
+      case 10: snprintf(buf, size, "%s", nwText("SYNC PHONE TIME", "ВРЕМЯ С ТЕЛЕФОНА")); break;
       case 11:
         snprintf(buf, size, nwText("STEP GOAL: %lu", "ЦЕЛЬ ШАГОВ: %lu"),
                  (unsigned long)nwStepGoal);
         break;
       case 12: snprintf(buf, size, "%s", nwText("RESET STEPS", "СБРОСИТЬ ШАГИ")); break;
-      case 13: snprintf(buf, size, "%s", nwText("DIAGNOSTICS", "СВЕДЕНИЯ О ЧАСАХ")); break;
-      case 14: snprintf(buf, size, "%s", nwText("ABOUT / UPDATE", "О ЧАСАХ / ОБНОВЛЕНИЕ")); break;
+      case 13: snprintf(buf, size, "%s", nwText("DIAGNOSTICS", "СТАТУС ЧАСОВ")); break;
+      case 14: snprintf(buf, size, "%s", nwText("ABOUT", "О ЧАСАХ")); break;
       case 15: snprintf(buf, size, "%s", nwText("LANGUAGE: ENGLISH", "ЯЗЫК: РУССКИЙ")); break;
       case 16:
         snprintf(buf, size, nwText("DARK THEME: %s", "ТЁМНАЯ ТЕМА: %s"),
                  nwText(nwDarkTheme ? "ON" : "OFF", nwDarkTheme ? "ВКЛ" : "ВЫКЛ"));
         break;
       case 17: snprintf(buf, size, "%s", nwText("GAME: DICE", "ИГРА: КУБИК")); break;
-      default: snprintf(buf, size, "%s", nwText("GAME: REACTION", "ИГРА: РЕАКЦИЯ")); break;
+      case 18: snprintf(buf, size, "%s", nwText("GAME: REACTION", "ИГРА: РЕАКЦИЯ")); break;
+      case 19: snprintf(buf, size, "%s", nwText("GAME: COIN", "ИГРА: МОНЕТКА")); break;
+      case 20: snprintf(buf, size, "%s", nwText("GAME: GUESS", "ИГРА: УГАДАЙ ЧИСЛО")); break;
+      case 21: snprintf(buf, size, "%s", nwText("GAME: MATH", "ИГРА: СЧИТАЙ БЫСТРО")); break;
+      case 22: snprintf(buf, size, "%s", nwText("STOPWATCH", "СЕКУНДОМЕР")); break;
+      case 23: snprintf(buf, size, "%s", nwText("BREATHING", "ДЫХАНИЕ")); break;
+      case 24: snprintf(buf, size, "%s", nwText("UPDATE VIA WI-FI", "ОБНОВИТЬ ПО WI-FI")); break;
+      default: snprintf(buf, size, "?"); break;
     }
   }
 
   void showNeuroMenu(bool requestPartial) {
+    if (nwMenuGroup > 5) nwMenuGroup = 0;
+    const int count = menuItemCount();
+    if (menuIndex < 0 || menuIndex >= count) menuIndex = 0;
     display.setFullWindow();
     display.fillScreen(backgroundColor());
     display.setTextColor(foregroundColor());
     display.setTextWrap(false);
 
-    display.fillRect(5, 5, 190, 21, foregroundColor());
-    drawTextColor(9, 12, nwText("NW://SETTINGS", "NW://НАСТРОЙКИ"), backgroundColor());
+    display.fillRect(5, 5, 190, 23, foregroundColor());
+    largeText(9, 8, menuTitle(), backgroundColor());
     char page[12];
-    snprintf(page, sizeof(page), "%02d/%02d", menuIndex + 1, MENU_COUNT);
+    snprintf(page, sizeof(page), "%02d/%02d", menuIndex + 1, count);
     drawTextColor(158, 12, page, backgroundColor());
 
     int top = menuIndex - 2;
     if (top < 0) top = 0;
-    const int maxTop = MENU_COUNT - NW_MENU_VISIBLE_ROWS;
+    const int visible = count < NW_MENU_VISIBLE_ROWS ? count : NW_MENU_VISIBLE_ROWS;
+    const int maxTop = count - visible;
     if (top > maxTop) top = maxTop;
 
     // Russian strings use UTF-8 and take more bytes than their visible width.
     char buf[72];
-    for (int row = 0; row < NW_MENU_VISIBLE_ROWS; ++row) {
+    for (int row = 0; row < visible; ++row) {
       const int item = top + row;
-      const int y = 32 + row * 28;
-      menuLabel(item, buf, sizeof(buf));
+      const int y = 34 + row * 28;
+      menuLabel(nwMenuGroup == 0 ? item : menuActionFor(nwMenuGroup, item), buf, sizeof(buf));
       if (item == menuIndex) {
-        display.fillRect(5, y - 4, 190, 21, foregroundColor());
-      display.setTextColor(backgroundColor());
-    } else {
-      display.setTextColor(foregroundColor());
-    }
-      drawTextColor(10, y, buf, item == menuIndex ? backgroundColor() : foregroundColor());
+        display.fillRect(5, y - 3, 190, 23, foregroundColor());
+      }
+      largeText(10, y, buf, item == menuIndex ? backgroundColor() : foregroundColor());
     }
 
     display.setTextColor(foregroundColor());
     display.drawLine(5, 176, 194, 176, foregroundColor());
-    label(7, 184, nwText("UP/DN MOVE  M:OK  B:BACK",
+    label(7, 184, nwText("UP/DN: MOVE  M:OK  B:BACK",
                           "ВВЕРХ/ВНИЗ: ВЫБОР  М:ОК  НАЗАД"));
 
     const bool partial = requestPartial && nwMenuPartial < 8;
@@ -720,7 +1183,13 @@ class NeuroWatch : public Watchy {
   }
 
   void selectMenuItem() {
-    switch (menuIndex) {
+    if (nwMenuGroup == 0) {
+      nwMenuGroup = menuIndex + 1;
+      menuIndex = 0;
+      showNeuroMenu(false);
+      return;
+    }
+    switch (menuAction()) {
       case 0:
         editTime(false);
         return;
@@ -803,6 +1272,12 @@ class NeuroWatch : public Watchy {
       case 18:
         playReactionGame();
         return;
+      case 19: playCoinGame(); return;
+      case 20: playGuessGame(); return;
+      case 21: playMathGame(); return;
+      case 22: showStopwatch(); return;
+      case 23: showBreathing(); return;
+      case 24: wifiOtaPortal(); return;
     }
   }
 
@@ -952,7 +1427,7 @@ class NeuroWatch : public Watchy {
     display.setTextWrap(false);
     display.drawRect(2, 2, 196, 196, foregroundColor());
     display.fillRect(7, 6, 186, 21, foregroundColor());
-    drawTextColor(10, 13, title, backgroundColor());
+    largeText(10, 10, title, backgroundColor());
     label(9, 164, nwText("UP/DN CHANGE   HOLD=FAST", "ВВЕРХ/ВНИЗ: ШАГ  УДЕРЖ.: БЫСТРО"));
     label(9, 177, nwText("MENU: NEXT / SAVE", "МЕНЮ: ДАЛЕЕ / СОХРАНИТЬ"));
     label(9, 188, nwText("BACK: CANCEL   AUTO:60S", "НАЗАД: ОТМЕНА   АВТО:60С"));
@@ -1269,7 +1744,7 @@ class NeuroWatch : public Watchy {
     display.fillScreen(backgroundColor());
     display.setTextColor(foregroundColor());
     display.drawRect(2, 2, 196, 196, foregroundColor());
-    label(10, 10, nwText("NW://STEPS", "NW://ШАГИ"));
+    largeLabel(10, 10, nwText("NW://STEPS", "NW://ШАГИ"));
 
     const uint32_t steps = sensor.getCounter();
     char buf[32];
@@ -1281,7 +1756,7 @@ class NeuroWatch : public Watchy {
     display.setTextSize(1);
 
     snprintf(buf, sizeof(buf), nwText("GOAL %lu", "ЦЕЛЬ %lu"), (unsigned long)nwStepGoal);
-    label(10, 112, buf);
+    largeLabel(10, 108, buf);
 
     const uint32_t capped = steps > nwStepGoal ? nwStepGoal : steps;
     const int fill = (int)((capped * 176UL) / nwStepGoal);
@@ -1300,40 +1775,40 @@ class NeuroWatch : public Watchy {
     display.fillScreen(backgroundColor());
     display.setTextColor(foregroundColor());
     display.drawRect(2, 2, 196, 196, foregroundColor());
-    label(10, 10, nwText("NW://STATUS", "NW://СТАТУС"));
+    largeLabel(10, 10, nwText("NW://STATUS", "NW://СТАТУС"));
     display.drawLine(8, 25, 191, 25, foregroundColor());
 
     char buf[64];
     const float voltage = getBatteryVoltage();
     const int pct = batteryPercent(voltage);
     snprintf(buf, sizeof(buf), nwText("BATTERY: %d%%", "ЗАРЯД: %d%%"), pct < 0 ? 0 : pct);
-    label(10, 42, buf);
+    largeLabel(10, 38, buf);
 
     snprintf(buf, sizeof(buf), nwText("STEPS: %lu", "ШАГИ: %lu"), (unsigned long)sensor.getCounter());
-    label(10, 62, buf);
+    largeLabel(10, 58, buf);
 
     snprintf(buf, sizeof(buf), nwText("HEAP: %lu B", "ПАМЯТЬ: %lu Б"),
              (unsigned long)esp_get_free_heap_size());
-    label(10, 82, buf);
+    largeLabel(10, 78, buf);
 
     snprintf(buf, sizeof(buf), nwText("FLASH: %lu MB", "ФЛЕШ: %lu МБ"),
              (unsigned long)(ESP.getFlashChipSize() / (1024UL * 1024UL)));
-    label(10, 102, buf);
+    largeLabel(10, 98, buf);
 
     snprintf(buf, sizeof(buf), nwText("CHIP: ESP32-PICO-D4", "ЧИП: ESP32-PICO-D4"));
-    label(10, 122, buf);
+    largeLabel(10, 118, buf);
 
     snprintf(buf, sizeof(buf), nwText("RTC: %02u:%02u %02u.%02u", "ЧАСЫ: %02u:%02u %02u.%02u"),
              (unsigned)currentTime.Hour,
              (unsigned)currentTime.Minute,
              (unsigned)currentTime.Day,
              (unsigned)currentTime.Month);
-    label(10, 142, buf);
+    largeLabel(10, 138, buf);
 
     snprintf(buf, sizeof(buf), nwText("ALARM: %s %02u:%02u", "БУДИЛЬНИК: %s %02u:%02u"),
              nwText(nwAlarmEnabled ? "ON" : "OFF", nwAlarmEnabled ? "ВКЛ" : "ВЫКЛ"),
              (unsigned)nwAlarmHour, (unsigned)nwAlarmMinute);
-    label(10, 162, buf);
+    largeLabel(10, 158, buf);
 
     label(10, 176, nwText("RADIOS: OFF AT REST", "РАДИО: ВЫКЛ В ПОКОЕ"));
     char zone[16];
@@ -1349,12 +1824,12 @@ class NeuroWatch : public Watchy {
     display.fillScreen(backgroundColor());
     display.setTextColor(foregroundColor());
     display.drawRect(2, 2, 196, 196, foregroundColor());
-    label(10, 10, nwText("NEUROWATCH OS", "НЕЙРОЧАСЫ ОС"));
+    largeLabel(10, 10, nwText("NEUROWATCH OS", "НЕЙРОЧАСЫ ОС"));
     display.drawLine(8, 25, 191, 25, foregroundColor());
 
     label(10, 45, nwText("VERSION: " NW_VERSION, "ВЕРСИЯ: " NW_VERSION));
     label(10, 66, nwText("FACE: STANDARD DAILY", "ЦИФЕРБЛАТ: СТАНДАРТ"));
-    label(10, 87, nwText("UPDATE: USB INSTALLER", "ОБНОВЛЕНИЕ: USB"));
+    label(10, 87, nwText("UPDATE: WI-FI / USB", "ОБНОВЛЕНИЕ: WI-FI / USB"));
     label(10, 108, nwText("BLE: ON DEMAND ONLY", "BLE: ТОЛЬКО ПО ЗАПРОСУ"));
     label(10, 139, nwText("EDITOR KEYS:", "УПРАВЛЕНИЕ:"));
     label(10, 154, nwText("UP/DN CHANGE; HOLD=FAST", "ВВЕРХ/ВНИЗ: ШАГ; УДЕРЖ.: БЫСТРО"));

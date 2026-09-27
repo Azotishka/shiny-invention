@@ -1,4 +1,4 @@
-name: NeuroWatch v0.9 Phone Sync
+name: NeuroWatch v1.0 Phone Sync Compatibility
 
 on:
   push:
@@ -54,7 +54,7 @@ jobs:
             --build-path "$PWD/build" firmware/NeuroWatch_OS
           test -s build/NeuroWatch_OS.ino.bin
           python3 scripts/check_ota.py build/NeuroWatch_OS.ino.bin
-          cp build/NeuroWatch_OS.ino.bin release/NeuroWatch-OS-v0.9-Watchy-V2-APP.bin
+          cp build/NeuroWatch_OS.ino.bin release/NeuroWatch-OS-v1.0-Watchy-V2-APP.bin
 
       - uses: actions/setup-java@v4
         with:
@@ -78,16 +78,16 @@ jobs:
           set -euo pipefail
           cat > release/QUICK_START_RU.md <<'TEXT'
           1. Установи NeuroWatch-Connect-Android-v0.9.apk.
-          2. На часах открой MENU -> SYNC PHONE TIME.
+          2. На часах открой ВРЕМЯ И ДАТА -> ВРЕМЯ С ТЕЛЕФОНА.
           3. В приложении нажми «Подключить и синхронизировать».
-          4. Для первой установки прошивки используй только APP.bin и уже проверенный USB-установщик.
+          4. Для первой установки v1.0 используй USB-установщик, затем обновления доступны через Wi-Fi из браузера.
           Часы принимают местное время и часовой пояс телефона. Начальное смещение — UTC+05:00 (Екатеринбург).
           TEXT
           sha256sum release/*.bin release/*.apk > release/SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NeuroWatch-v0.9-Android-and-Firmware
+          name: NeuroWatch-v1.0-Android-and-Firmware
           path: release/
           if-no-files-found: error
 

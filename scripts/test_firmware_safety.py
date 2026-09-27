@@ -113,7 +113,7 @@ class FirmwareSafetyContract(unittest.TestCase):
         self.assertIn("void playReactionGame()", SOURCE)
         self.assertIn('saveBoolPref("alarm_vib", nwAlarmVibration)', SOURCE)
         self.assertIn('"ВИБРОБУДИЛЬНИК: %s"', SOURCE)
-        self.assertIn('"ПРОВЕРИТЬ ВИБРАЦИЮ"', SOURCE)
+        self.assertIn('"ТЕСТ ВИБРАЦИИ"', SOURCE)
         self.assertIn('saveUShortPref("rx_best", nwBestReactionMs)', SOURCE)
         self.assertIn('prefs.getUShort("rx_best", 0)', SOURCE)
 
@@ -155,6 +155,26 @@ class FirmwareSafetyContract(unittest.TestCase):
         self.assertNotIn("esp_partition_write(", SOURCE)
         self.assertNotIn("esp_flash_write(", SOURCE)
         self.assertNotIn("eraseFlash", SOURCE)
+
+    def test_grouped_large_print_menu_and_extra_apps(self):
+        self.assertIn("u8g2_font_6x13B_t_cyrillic", SOURCE)
+        self.assertIn('"ШАГИ И ПРИЛОЖЕНИЯ"', SOURCE)
+        self.assertIn("menuActionFor(nwMenuGroup, item)", SOURCE)
+        for app in ("playCoinGame()", "playGuessGame()", "playMathGame()",
+                    "showStopwatch()", "showBreathing()"):
+            self.assertIn(app, SOURCE)
+
+    def test_wifi_update_requires_local_activation_and_a_spare_slot(self):
+        face = SOURCE.split("void drawWatchFace() override {", 1)[1].split(
+            "void handleButtonPress() override {", 1)[0]
+        self.assertNotIn("WiFi.softAP", face)
+        ota = SOURCE.split("void wifiOtaPortal() {", 1)[1].split(
+            "bool maybeDailyAlarm()", 1)[0]
+        for guard in ("esp_ota_get_running_partition()", "esp_ota_get_next_update_partition(nullptr)",
+                      "nwCanStartWifiOta(", "nwOtaChunkFits(", "Update.end(true)",
+                      "NW_WIFI_OTA_TIMEOUT_MS", "WiFi.softAPdisconnect(true)"):
+            self.assertIn(guard, ota)
+        self.assertIn("/update-", ota)
 
 
 if __name__ == "__main__":

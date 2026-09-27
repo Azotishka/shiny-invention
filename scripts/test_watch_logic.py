@@ -27,6 +27,23 @@ def compile_and_run(test_case, header, source):
 
 
 class WatchLogicTests(unittest.TestCase):
+    def test_wifi_ota_needs_spare_slot_metadata_and_sufficient_battery(self):
+        compile_and_run(self, "ota_policy.h", r'''#include <cassert>
+#include "ota_policy.h"
+int main() {
+  const uint32_t image = 1847104, slot = 0x1e0000;
+  assert(nwCanStartWifiOta(0x10000, 0x1f0000, slot, image, true, 50));
+  assert(!nwCanStartWifiOta(0x10000, 0x10000, slot, image, true, 90));
+  assert(!nwCanStartWifiOta(0x10000, 0x1f0000, slot, image, false, 90));
+  assert(!nwCanStartWifiOta(0x10000, 0x1f0000, slot, image, true, 49));
+  assert(!nwCanStartWifiOta(0x10000, 0x1f0000, image - 1, image, true, 90));
+  assert(!nwCanStartWifiOta(0x10000, 0x3f0000, slot, image, true, 90));
+  assert(nwOtaChunkFits(slot - 512, 512, slot));
+  assert(!nwOtaChunkFits(slot - 512, 513, slot));
+  assert(!nwOtaChunkFits(0, 0, slot));
+}
+''')
+
     def test_alarm_fires_at_configured_minute_only_once_per_day(self):
         compile_and_run(self, "alarm_policy.h", r'''#include <cassert>
 #include <stdint.h>

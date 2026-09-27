@@ -1,6 +1,6 @@
 #pragma once
 
-#define NW_VERSION "0.9"
+#define NW_VERSION "1.0"
 
 // Persistent UI defaults used only when no saved preference exists.
 #define NW_DEFAULT_24H 1
@@ -27,6 +27,7 @@
 #define NW_STEP_GOAL_HOLD_STEP 2500UL
 #define NW_MENU_VISIBLE_ROWS 5
 #define NW_EDITOR_TIMEOUT_MS 60000UL
+#define NW_WIFI_OTA_TIMEOUT_MS 300000UL
 
 // Kept for Watchy's base settings; normal daily operation does not start Wi-Fi/BLE.
 #define NW_UTC_OFFSET_SECONDS (5 * 3600)
