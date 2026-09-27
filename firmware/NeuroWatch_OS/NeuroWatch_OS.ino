@@ -741,6 +741,8 @@ class NeuroWatch : public Watchy {
       if (button == 1) {
         ++tries;
         if (guess == secret) {
+          snprintf(attempts, sizeof(attempts), nwText("TRIES: %u", "ПОПЫТОК: %u"),
+                   (unsigned)tries);
           drawGameFrame(nwText("YOU WON!", "УГАДАЛ!"), attempts,
                         nwText("MENU: NEW ROUND", "МЕНЮ: НОВЫЙ РАУНД"),
                         nwText("BACK: EXIT", "НАЗАД: ВЫХОД"));
@@ -904,7 +906,7 @@ class NeuroWatch : public Watchy {
     largeLabel(10, 67, nwText("PASSWORD:", "ПАРОЛЬ:"));
     largeLabel(10, 84, password);
     label(10, 112, nwText("Open Safari / Chrome:", "ОТКРОЙ SAFARI / CHROME:"));
-    largeLabel(10, 130, "192.168.4.1");
+    largeLabel(10, 130, "http://192.168.4.1");
     label(10, 166, nwText("Choose NeuroWatch .bin", "ВЫБЕРИ ФАЙЛ ПРОШИВКИ .BIN"));
     label(10, 184, nwText("BACK: CANCEL  LIMIT: 5 MIN", "НАЗАД: ОТМЕНА  ЛИМИТ: 5 МИН"));
     display.display(false);
@@ -938,8 +940,7 @@ class NeuroWatch : public Watchy {
     }
 
     char password[16], token[17];
-    snprintf(password, sizeof(password), "%08lx%04lx",
-             (unsigned long)esp_random(), (unsigned long)(esp_random() & 0xffffUL));
+    snprintf(password, sizeof(password), "%010lu", (unsigned long)esp_random());
     snprintf(token, sizeof(token), "%08lx%08lx",
              (unsigned long)esp_random(), (unsigned long)esp_random());
     WiFi.mode(WIFI_AP);

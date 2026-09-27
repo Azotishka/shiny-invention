@@ -1,5 +1,6 @@
 """Static safety/UX invariants for NeuroWatch OS v0.9."""
 from pathlib import Path
+import re
 import unittest
 
 SOURCE = (Path(__file__).resolve().parents[1] /
@@ -163,6 +164,13 @@ class FirmwareSafetyContract(unittest.TestCase):
         for app in ("playCoinGame()", "playGuessGame()", "playMathGame()",
                     "showStopwatch()", "showBreathing()"):
             self.assertIn(app, SOURCE)
+        table = SOURCE.split("static const uint8_t actions[5][6] = {", 1)[1].split("};", 1)[0]
+        rows = [list(map(int, re.findall(r"\d+", row)))
+                for row in re.findall(r"\{([^{}]+)\}", table)]
+        self.assertEqual([len(row) for row in rows], [6] * 5)
+        available = [action for row, size in zip(rows, [5, 6, 5, 5, 4])
+                     for action in row[:size]]
+        self.assertEqual(sorted(available), list(range(25)))
 
     def test_wifi_update_requires_local_activation_and_a_spare_slot(self):
         face = SOURCE.split("void drawWatchFace() override {", 1)[1].split(
