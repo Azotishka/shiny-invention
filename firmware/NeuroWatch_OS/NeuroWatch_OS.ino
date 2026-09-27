@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 12497)
-Total output lines: 1397
-
 #include <Arduino.h>
 #include <Watchy.h>
 #include <Preferences.h>
@@ -666,7 +663,53 @@ class NeuroWatch : public Watchy {
         break;
       case 12: snprintf(buf, size, "%s", nwText("RESET STEPS", "СБРОСИТЬ ШАГИ")); break;
       case 13: snprintf(buf, size, "%s", nwText("DIAGNOSTICS", "СВЕДЕНИЯ О ЧАСАХ")); break;
-      case 14: snprintf(buf, size, "%s", nwText("ABOUT / UPDATE", "О ЧАСАХ / ОБНО…497 tokens truncated…АЗАД"));
+      case 14: snprintf(buf, size, "%s", nwText("ABOUT / UPDATE", "О ЧАСАХ / ОБНОВЛЕНИЕ")); break;
+      case 15: snprintf(buf, size, "%s", nwText("LANGUAGE: ENGLISH", "ЯЗЫК: РУССКИЙ")); break;
+      case 16:
+        snprintf(buf, size, nwText("DARK THEME: %s", "ТЁМНАЯ ТЕМА: %s"),
+                 nwText(nwDarkTheme ? "ON" : "OFF", nwDarkTheme ? "ВКЛ" : "ВЫКЛ"));
+        break;
+      case 17: snprintf(buf, size, "%s", nwText("GAME: DICE", "ИГРА: КУБИК")); break;
+      default: snprintf(buf, size, "%s", nwText("GAME: REACTION", "ИГРА: РЕАКЦИЯ")); break;
+    }
+  }
+
+  void showNeuroMenu(bool requestPartial) {
+    display.setFullWindow();
+    display.fillScreen(backgroundColor());
+    display.setTextColor(foregroundColor());
+    display.setTextWrap(false);
+
+    display.fillRect(5, 5, 190, 21, foregroundColor());
+    drawTextColor(9, 12, nwText("NW://SETTINGS", "NW://НАСТРОЙКИ"), backgroundColor());
+    char page[12];
+    snprintf(page, sizeof(page), "%02d/%02d", menuIndex + 1, MENU_COUNT);
+    drawTextColor(158, 12, page, backgroundColor());
+
+    int top = menuIndex - 2;
+    if (top < 0) top = 0;
+    const int maxTop = MENU_COUNT - NW_MENU_VISIBLE_ROWS;
+    if (top > maxTop) top = maxTop;
+
+    // Russian strings use UTF-8 and take more bytes than their visible width.
+    char buf[72];
+    for (int row = 0; row < NW_MENU_VISIBLE_ROWS; ++row) {
+      const int item = top + row;
+      const int y = 32 + row * 28;
+      menuLabel(item, buf, sizeof(buf));
+      if (item == menuIndex) {
+        display.fillRect(5, y - 4, 190, 21, foregroundColor());
+      display.setTextColor(backgroundColor());
+    } else {
+      display.setTextColor(foregroundColor());
+    }
+      drawTextColor(10, y, buf, item == menuIndex ? backgroundColor() : foregroundColor());
+    }
+
+    display.setTextColor(foregroundColor());
+    display.drawLine(5, 176, 194, 176, foregroundColor());
+    label(7, 184, nwText("UP/DN MOVE  M:OK  B:BACK",
+                          "ВВЕРХ/ВНИЗ: ВЫБОР  М:ОК  НАЗАД"));
 
     const bool partial = requestPartial && nwMenuPartial < 8;
     nwMenuPartial = partial ? nwMenuPartial + 1 : 0;
