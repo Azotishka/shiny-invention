@@ -328,10 +328,12 @@ find_replacement = '''    /**
 
     private fun closeTransport() {
         running = false
+        sessionGeneration.incrementAndGet()
         try { readThread?.interrupt() } catch (_: Exception) {}
         readThread = null
-        try { port?.close() } catch (_: Exception) {}
+        val oldPort = port
         port = null
+        try { oldPort?.close() } catch (_: Exception) {}
         try { usbConnection?.close() } catch (_: Exception) {}
         usbConnection = null
         connectedDevice = null
@@ -374,6 +376,7 @@ u = u.replace(
     "import android.hardware.usb.UsbConstants\n"
     "import android.hardware.usb.UsbDeviceConnection\n"
     "import java.io.IOException\n"
+    "import java.util.concurrent.atomic.AtomicLong\n"
     "import com.hoho.android.usbserial.driver.CdcAcmSerialDriver\n"
     "import com.hoho.android.usbserial.driver.ProbeTable\n"
     "import org.json.JSONArray\n"
@@ -392,6 +395,7 @@ field_replacement = '''    private var port: UsbSerialPort? = null
     private var forcedSignalMode = 0 // 0=auto, 1=driver sequential, 2=CDC atomic, 3=WCH vendor atomic
     private var cdcControlInterfaceId = 0
     private var readThread: Thread? = null
+    private val sessionGeneration = AtomicLong(0L)
 '''
 if field_needle not in u:
     raise SystemExit("UsbSerialManager field patch point not found")
@@ -491,6 +495,75 @@ if disconnect_needle not in u:
     raise SystemExit("UsbSerialManager disconnect patch point not found")
 u = u.replace(disconnect_needle, disconnect_replacement)
 
+# Android.disconnect() is an intentional transport close. The upstream method
+# posts a callback to WebView asynchronously; after a reconnect the callback
+# acts on the NEW AndroidSerialPort and closes its readable stream.
+disconnect_event_needle = '''    fun disconnect() {
+        running = false
+        readThread?.interrupt()
+        readThread = null
+        closeTransport()
+        webView.post {
+            webView.evaluateJavascript("window.__usbDisconnected && window.__usbDisconnected()", null)
+        }
+    }
+'''
+disconnect_event_replacement = '''    fun disconnect() {
+        closeTransport()
+    }
+'''
+if disconnect_event_needle not in u:
+    raise SystemExit("UsbSerialManager intentional-disconnect event point not found")
+u = u.replace(disconnect_event_needle, disconnect_event_replacement)
+
+reader_start_needle = '''        running = true
+        readThread = Thread { readLoop() }.apply { start() }
+'''
+reader_start_replacement = '''        running = true
+        val currentPort = port!!
+        val session = sessionGeneration.incrementAndGet()
+        readThread = Thread { readLoop(currentPort, session) }.apply { start() }
+'''
+if reader_start_needle not in u:
+    raise SystemExit("UsbSerialManager reader start point not found")
+u = u.replace(reader_start_needle, reader_start_replacement)
+
+reader_needle = '''    private fun readLoop() {
+        val buf = ByteArray(16384)
+        while (running) {
+            try {
+                val len = port?.read(buf, 50) ?: break
+                if (len > 0) {
+                    synchronized(readLock) { readBuf.write(buf, 0, len) }
+                }
+            } catch (e: Exception) {
+                if (running) Log.e(TAG, "read error", e)
+                break
+            }
+        }
+    }
+'''
+reader_replacement = '''    private fun readLoop(activePort: UsbSerialPort, session: Long) {
+        val buf = ByteArray(16384)
+        while (running && sessionGeneration.get() == session) {
+            try {
+                val len = activePort.read(buf, 50)
+                if (len > 0 && sessionGeneration.get() == session) {
+                    synchronized(readLock) {
+                        if (sessionGeneration.get() == session) readBuf.write(buf, 0, len)
+                    }
+                }
+            } catch (e: Exception) {
+                if (running && sessionGeneration.get() == session) Log.e(TAG, "read error", e)
+                break
+            }
+        }
+    }
+'''
+if reader_needle not in u:
+    raise SystemExit("UsbSerialManager reader isolation point not found")
+u = u.replace(reader_needle, reader_replacement)
+
 signals_needle = '''    fun setSignals(rts: Int, dtr: Int) {
         try {
             if (rts != -1) port?.rts = rts != 0
@@ -587,7 +660,7 @@ usb_clear_needle = '''    fun readBufferedBase64(): String {
         }
     }
 
-    private fun readLoop() {
+    private fun readLoop(activePort: UsbSerialPort, session: Long) {
 '''
 usb_clear_replacement = '''    fun readBufferedBase64(): String {
         synchronized(readLock) {
@@ -602,7 +675,7 @@ usb_clear_replacement = '''    fun readBufferedBase64(): String {
         synchronized(readLock) { readBuf.reset() }
     }
 
-    private fun readLoop() {
+    private fun readLoop(activePort: UsbSerialPort, session: Long) {
 '''
 if usb_clear_needle not in u:
     raise SystemExit("UsbSerialManager clear-buffer patch point not found")
@@ -618,6 +691,22 @@ if "com.github.mik3y:usb-serial-for-android:3.7.3" not in g:
 gradle.write_text(g)
 
 h = html.read_text()
+
+# Closing an internal ROM attempt must end THAT attempt's stream immediately.
+# The native bridge now emits no asynchronous close for an intentional reset.
+serial_adapter_needle = '''    window.__usbDisconnected = () => { this._closed = true; };
+  }
+'''
+serial_adapter_replacement = '''    if (window.__activeSerialPort) window.__activeSerialPort._closed = true;
+    window.__activeSerialPort = this;
+    window.__usbDisconnected = () => {
+      if (window.__activeSerialPort) window.__activeSerialPort._closed = true;
+    };
+  }
+'''
+if serial_adapter_needle not in h:
+    raise SystemExit("AndroidSerialPort session point not found")
+h = h.replace(serial_adapter_needle, serial_adapter_replacement, 1)
 
 old_info = "  getInfo() { return { usbVendorId: 0x303A, usbProductId: 0x1001 }; }"
 new_info = "  getInfo() { return { usbVendorId: Android.usbVendorId(), usbProductId: Android.usbProductId() }; }"
@@ -1685,7 +1774,7 @@ usb_manager_js = r'''
     try {
       const usb = Android.usbDiagnostics();
       const visibleLog = document.getElementById('log')?.innerText || '';
-      const text = 'NeuroWatch Update 0.8\nUSB=' + usb + '\n\nLOG:\n' + visibleLog;
+      const text = 'NeuroWatch USB Update 1.1\nUSB=' + usb + '\n\nLOG:\n' + visibleLog;
       const result = Android.copyText('NeuroWatch diagnostics', text);
       log(result === 'ok' ? 'Диагностика скопирована в буфер обмена.' : String(result), result === 'ok' ? 'ok' : 'err');
     } catch (e) {
@@ -1708,6 +1797,39 @@ script_close = h.rfind("</script>")
 if script_close < 0:
     raise SystemExit("flash.html script close not found")
 h = h[:script_close] + usb_manager_js + "\n" + h[script_close:]
+
+# Only a real USB detach closes the active stream from an Android event.
+physical_detach_needle = """  } else if (event === 'disconnected') {
+    dot.className = 'dot';
+"""
+physical_detach_replacement = """  } else if (event === 'disconnected') {
+    if (window.__usbDisconnected) window.__usbDisconnected();
+    dot.className = 'dot';
+"""
+if physical_detach_needle not in h:
+    raise SystemExit("physical USB detach event point not found")
+h = h.replace(physical_detach_needle, physical_detach_replacement, 1)
+
+h = h.replace("Android.disconnect();", "disconnectCurrentTransport();")
+close_session_needle = "  async close() { this._closed = true; disconnectCurrentTransport(); }"
+close_session_replacement = """  async close() {
+    this._closed = true;
+    if (window.__activeSerialPort === this) disconnectCurrentTransport();
+  }"""
+if close_session_needle not in h:
+    raise SystemExit("AndroidSerialPort.close session guard point not found")
+h = h.replace(close_session_needle, close_session_replacement, 1)
+helper_marker = "\nconst terminal = {"
+if helper_marker not in h:
+    raise SystemExit("serial transport helper point not found")
+h = h.replace(helper_marker, """
+function disconnectCurrentTransport() {
+  const active = window.__activeSerialPort;
+  if (active) active._closed = true;
+  window.__activeSerialPort = null;
+  Android.disconnect();
+}
+""" + helper_marker, 1)
 
 html.write_text(h)
 print("patched Android flasher for NeuroWatch Manager v2 safe-install flow")

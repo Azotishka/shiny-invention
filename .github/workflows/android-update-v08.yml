@@ -1,4 +1,4 @@
-name: NeuroWatch v1.0 USB Updater
+name: NeuroWatch v1.1 USB Updater
 
 on:
   workflow_dispatch:
@@ -9,6 +9,7 @@ on:
     paths:
       - 'firmware/**'
       - 'scripts/patch_neurowatch_installer.py'
+      - 'scripts/test_installer_usb_session.mjs'
       - '.github/workflows/android-update-v08.yml'
 
 permissions:
@@ -128,9 +129,10 @@ jobs:
           assert "bootloader.bin" not in do_flash
           assert "partitions.bin" not in do_flash
           s = h[h.index("<script>")+8:h.rindex("</script>")]
-          Path("/tmp/neurowatch-v10-updater.js").write_text(s)
+          Path("/tmp/neurowatch-v11-updater.js").write_text(s)
           PY
-          node --check /tmp/neurowatch-v10-updater.js
+          node --check /tmp/neurowatch-v11-updater.js
+          node ../scripts/test_installer_usb_session.mjs app/src/main/assets/flash.html app/src/main/java/io/github/drakosha/espflash/UsbSerialManager.kt
           test -s app/src/main/assets/app.bin
 
       - name: Build APK
@@ -139,23 +141,23 @@ jobs:
         run: |
           set -euo pipefail
           gradle --no-daemon :app:assembleDebug \
-            -PappId=ru.neurogazette.neurowatchupdate10 \
-            -PappLabel='NeuroWatch Update 1.0' \
-            -PversionName=1.0 \
-            -PversionCode=10
+            -PappId=ru.neurogazette.neurowatchupdate11 \
+            -PappLabel='NeuroWatch USB Update 1.1' \
+            -PversionName=1.1 \
+            -PversionCode=11
 
           mkdir -p ../release
-          cp app/build/outputs/apk/debug/app-debug.apk ../release/NeuroWatch-Updater-v1.0.apk
+          cp app/build/outputs/apk/debug/app-debug.apk ../release/NeuroWatch-Updater-v1.1.apk
           cp app/src/main/assets/app.bin ../release/NeuroWatch-OS-v1.0-app.bin
           (cd ../release && sha256sum *.apk *.bin > SHA256SUMS.txt)
           printf '%s\n' \
-            'App-only update to NeuroWatch OS v1.0 Wi-Fi Update.' \
+            'USB updater v1.1 installs NeuroWatch OS v1.0 and isolates serial sessions across reconnects.' \
             'The updater does not erase the 4MB flash and does not rewrite the bootloader or partition table.' \
             'It verifies the new app by MD5 and then performs a normal boot reset.' \
             > ../release/READ_FIRST.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NeuroWatch-Updater-v1.0
+          name: NeuroWatch-Updater-v1.1
           path: release/
           if-no-files-found: error
