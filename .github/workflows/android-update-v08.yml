@@ -9,7 +9,6 @@ on:
     paths:
       - 'firmware/**'
       - 'scripts/patch_neurowatch_installer.py'
-      - 'scripts/patch_finalize_recovery.py'
       - '.github/workflows/android-update-v08.yml'
 
 permissions:
@@ -83,16 +82,15 @@ jobs:
           cd ..
 
           python3 scripts/patch_neurowatch_installer.py android-installer
-          python3 scripts/patch_finalize_recovery.py android-installer
           cp installer-assets/app.bin android-installer/app/src/main/assets/
 
           python3 - <<'PY'
           from pathlib import Path
           p = Path("android-installer/app/src/main/assets/flash.html")
           h = p.read_text()
-          h = h.replace("ПРОВЕРИТЬ И ЗАПУСТИТЬ NEUROWATCH OS", "ОБНОВИТЬ ДО NEUROWATCH OS v1.0")
-          h = h.replace("VERIFY & BOOT NEUROWATCH OS", "UPDATE TO NEUROWATCH OS v1.0")
-          h = h.replace("NeuroWatch OS Finalize Recovery", "NeuroWatch OS v1.0 Updater")
+          h = h.replace("УСТАНОВИТЬ NEUROWATCH OS", "ОБНОВИТЬ ДО NEUROWATCH OS v1.0")
+          h = h.replace("INSTALL NEUROWATCH OS", "UPDATE TO NEUROWATCH OS v1.0")
+          h = h.replace("NeuroWatch OS Safe Installer", "NeuroWatch OS v1.0 Updater")
           p.write_text(h)
           PY
 
@@ -122,9 +120,10 @@ jobs:
           h = Path("app/src/main/assets/flash.html").read_text()
           do_flash = h[h.index("async function doFlash() {"):h.index("\nasync function doErase()", h.index("async function doFlash() {"))]
           assert "ОБНОВИТЬ ДО NEUROWATCH OS v1.0" in h
-          assert "async function verifyApp(loader, expected, appLength)" in h
-          assert "flashMd5sum(0x10000, appLength)" in h
-          assert "address: 0x10000" in h
+          assert "const choice = pickSafeOtaTarget(partsInfo, otadata);" in do_flash
+          assert "flashMd5sum(choice.target.offset, app.length)" in do_flash
+          assert "address: choice.target.offset" in do_flash
+          assert "writeExact4kSector(session.loader, otadataPart.offset + copyStart, sector)" in do_flash
           assert "eraseFlash()" not in do_flash
           assert "bootloader.bin" not in do_flash
           assert "partitions.bin" not in do_flash
