@@ -44,6 +44,15 @@ class FirmwareSafetyContract(unittest.TestCase):
         self.assertIn("digit(20, 37, shownHour / 10)", SOURCE)
         self.assertIn("digit(141, 37, currentTime.Minute % 10)", SOURCE)
 
+    def test_bolder_display_and_refresh_for_editors(self):
+        self.assertIn("x + 1, y", SOURCE)
+        self.assertIn("constexpr int w = 29, h = 38, t = 5", SOURCE)
+        self.assertIn("presentEditorFrame()", SOURCE)
+        self.assertIn("nwEditorPartial < 7", SOURCE)
+
+    def test_editor_titles_are_localized(self):
+        self.assertIn('editorHeader(nwText("DAILY STEP GOAL", "ЦЕЛЬ ШАГОВ НА ДЕНЬ"))', SOURCE)
+
     def test_time_and_date_are_separate_easy_editors(self):
         self.assertIn("void editTime(bool alarm = false)", SOURCE)
         self.assertIn("void editDate()", SOURCE)
