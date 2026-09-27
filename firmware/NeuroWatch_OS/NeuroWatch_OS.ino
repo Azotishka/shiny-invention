@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 12497)
+Total output lines: 1397
+
 #include <Arduino.h>
 #include <Watchy.h>
 #include <Preferences.h>
@@ -46,6 +49,7 @@ RTC_DATA_ATTR uint32_t nwStepGoal = NW_STEP_GOAL;
 RTC_DATA_ATTR uint16_t nwBestReactionMs = 0;
 RTC_DATA_ATTR uint32_t nwAlarmLastDay = 0xFFFFFFFFUL;
 RTC_DATA_ATTR uint8_t nwMenuPartial = 0;
+RTC_DATA_ATTR uint8_t nwEditorPartial = 0;
 RTC_DATA_ATTR uint8_t nwAppReturnToMenu = 0;
 RTC_DATA_ATTR uint32_t nwLastBuzzStamp = 0xFFFFFFFFUL;
 
@@ -208,7 +212,8 @@ class NeuroWatch : public Watchy {
                (unsigned)currentTime.Day,
                tmYearToCalendar(currentTime.Year));
     }
-    label(10, 90, buf);
+    display.fillRect(8, 85, 184, 17, foregroundColor());
+    drawTextColor(12, 90, buf, backgroundColor());
 
     if (!nwUse24h) {
       label(171, 29, nwText(pm ? "PM" : "AM", pm ? "ПП" : "ДП"));
@@ -292,9 +297,9 @@ class NeuroWatch : public Watchy {
 
   void drawStandardWallpaper() {
     display.drawRect(2, 2, 196, 196, foregroundColor());
-    display.drawLine(8, 25, 191, 25, foregroundColor());
-    label(10, 9, nwText("NEUROWATCH // DAILY", "НЕЙРОЧАСЫ // ДЕНЬ"));
-    label(153, 9, "OS " NW_VERSION);
+    display.fillRect(7, 6, 186, 19, foregroundColor());
+    drawTextColor(10, 11, nwText("NEUROWATCH // DAILY", "НЕЙРОЧАСЫ // ДЕНЬ"), backgroundColor());
+    drawTextColor(159, 11, "OS " NW_VERSION, backgroundColor());
 
     // One built-in standard wallpaper: light technical corner marks.
     display.drawLine(8, 31, 27, 31, foregroundColor());
@@ -322,8 +327,12 @@ class NeuroWatch : public Watchy {
       nwTextRenderer.setFont(u8g2_font_5x8_t_cyrillic);
       nwTextRenderer.setCursor(x, y + 7);
       nwTextRenderer.print(s);
+      nwTextRenderer.setCursor(x + 1, y + 7);
+      nwTextRenderer.print(s);
     } else {
       display.setCursor(x, y);
+      display.print(s);
+      display.setCursor(x + 1, y);
       display.print(s);
     }
   }
@@ -344,7 +353,7 @@ class NeuroWatch : public Watchy {
         0x3f, 0x06, 0x5b, 0x4f, 0x66,
         0x6d, 0x7d, 0x07, 0x7f, 0x6f};
     const uint8_t bits = segments[value % 10];
-    constexpr int w = 29, h = 38, t = 4, mid = h / 2;
+    constexpr int w = 29, h = 38, t = 5, mid = h / 2;
     if (bits & 0x01) display.fillRect(x + t, y, w - 2 * t, t, foregroundColor());
     if (bits & 0x02) display.fillRect(x + w - t, y + t, t, mid - t, foregroundColor());
     if (bits & 0x04) display.fillRect(x + w - t, y + mid, t, mid - t, foregroundColor());
@@ -657,50 +666,7 @@ class NeuroWatch : public Watchy {
         break;
       case 12: snprintf(buf, size, "%s", nwText("RESET STEPS", "СБРОСИТЬ ШАГИ")); break;
       case 13: snprintf(buf, size, "%s", nwText("DIAGNOSTICS", "СВЕДЕНИЯ О ЧАСАХ")); break;
-      case 14: snprintf(buf, size, "%s", nwText("ABOUT / UPDATE", "О ЧАСАХ / ОБНОВЛЕНИЕ")); break;
-      case 15: snprintf(buf, size, "%s", nwText("LANGUAGE: ENGLISH", "ЯЗЫК: РУССКИЙ")); break;
-      case 16:
-        snprintf(buf, size, nwText("DARK THEME: %s", "ТЁМНАЯ ТЕМА: %s"),
-                 nwText(nwDarkTheme ? "ON" : "OFF", nwDarkTheme ? "ВКЛ" : "ВЫКЛ"));
-        break;
-      case 17: snprintf(buf, size, "%s", nwText("GAME: DICE", "ИГРА: КУБИК")); break;
-      default: snprintf(buf, size, "%s", nwText("GAME: REACTION", "ИГРА: РЕАКЦИЯ")); break;
-    }
-  }
-
-  void showNeuroMenu(bool requestPartial) {
-    display.setFullWindow();
-    display.fillScreen(backgroundColor());
-    display.setTextColor(foregroundColor());
-    display.setTextWrap(false);
-
-    label(7, 8, nwText("NW://SETTINGS", "NW://НАСТРОЙКИ"));
-    display.drawLine(5, 23, 194, 23, foregroundColor());
-
-    int top = menuIndex - 2;
-    if (top < 0) top = 0;
-    const int maxTop = MENU_COUNT - NW_MENU_VISIBLE_ROWS;
-    if (top > maxTop) top = maxTop;
-
-    // Russian strings use UTF-8 and take more bytes than their visible width.
-    char buf[72];
-    for (int row = 0; row < NW_MENU_VISIBLE_ROWS; ++row) {
-      const int item = top + row;
-      const int y = 32 + row * 28;
-      menuLabel(item, buf, sizeof(buf));
-      if (item == menuIndex) {
-        display.fillRect(5, y - 4, 190, 21, foregroundColor());
-      display.setTextColor(backgroundColor());
-    } else {
-      display.setTextColor(foregroundColor());
-    }
-      drawTextColor(10, y, buf, item == menuIndex ? backgroundColor() : foregroundColor());
-    }
-
-    display.setTextColor(foregroundColor());
-    display.drawLine(5, 176, 194, 176, foregroundColor());
-    label(7, 184, nwText("UP/DN MOVE  M:OK  B:BACK",
-                          "ВВЕРХ/ВНИЗ: ВЫБОР  М:ОК  НАЗАД"));
+      case 14: snprintf(buf, size, "%s", nwText("ABOUT / UPDATE", "О ЧАСАХ / ОБНО…497 tokens truncated…АЗАД"));
 
     const bool partial = requestPartial && nwMenuPartial < 8;
     nwMenuPartial = partial ? nwMenuPartial + 1 : 0;
@@ -937,15 +903,22 @@ class NeuroWatch : public Watchy {
   }
 
   void editorHeader(const char *title) {
+    display.setFullWindow();
     display.fillScreen(backgroundColor());
     display.setTextColor(foregroundColor());
     display.setTextWrap(false);
     display.drawRect(2, 2, 196, 196, foregroundColor());
-    label(9, 10, title);
-    display.drawLine(7, 26, 192, 26, foregroundColor());
+    display.fillRect(7, 6, 186, 21, foregroundColor());
+    drawTextColor(10, 13, title, backgroundColor());
     label(9, 164, nwText("UP/DN CHANGE   HOLD=FAST", "ВВЕРХ/ВНИЗ: ШАГ  УДЕРЖ.: БЫСТРО"));
     label(9, 177, nwText("MENU: NEXT / SAVE", "МЕНЮ: ДАЛЕЕ / СОХРАНИТЬ"));
     label(9, 188, nwText("BACK: CANCEL   AUTO:60S", "НАЗАД: ОТМЕНА   АВТО:60С"));
+  }
+
+  void presentEditorFrame() {
+    const bool partial = nwEditorPartial < 7;
+    nwEditorPartial = partial ? nwEditorPartial + 1 : 0;
+    display.display(partial);
   }
 
   void editTime(bool alarm = false) {
@@ -956,6 +929,7 @@ class NeuroWatch : public Watchy {
     uint8_t hour = alarm ? nwAlarmHour : currentTime.Hour % 24;
     uint8_t minute = alarm ? nwAlarmMinute : currentTime.Minute % 60;
     uint8_t field = 0;
+    nwEditorPartial = 0;
     uint32_t lastAction = millis();
 
     waitAllReleased(1500);
@@ -980,7 +954,7 @@ class NeuroWatch : public Watchy {
 
       label(31, 104, field == 0 ? nwText("^ HOUR", "^ ЧАС") : nwText("  HOUR", "  ЧАС"));
       label(111, 104, field == 1 ? nwText("^ MIN", "^ МИН") : nwText("  MIN", "  МИН"));
-      display.display(true);
+      presentEditorFrame();
 
       const int button = waitEditorButton(lastAction);
       if (button == 0) break;
@@ -1044,6 +1018,7 @@ class NeuroWatch : public Watchy {
     if (year < 2020 || year > 2099) year = 2026;
 
     uint8_t field = 0;
+    nwEditorPartial = 0;
     uint32_t lastAction = millis();
     waitAllReleased(1500);
 
@@ -1071,7 +1046,7 @@ class NeuroWatch : public Watchy {
       label(28, 105, field == 0 ? (nwDateDmy ? "^ДЕНЬ" : "^МЕС") : (nwDateDmy ? " ДЕНЬ" : " МЕС"));
       label(79, 105, field == 1 ? (nwDateDmy ? "^МЕС" : "^ДЕНЬ") : (nwDateDmy ? " МЕС" : " ДЕНЬ"));
       label(132, 105, field == 2 ? "^ГОД" : " ГОД");
-      display.display(true);
+      presentEditorFrame();
 
       const int button = waitEditorButton(lastAction);
       if (button == 0) break;
@@ -1166,7 +1141,7 @@ class NeuroWatch : public Watchy {
     waitAllReleased(1500);
 
     while ((uint32_t)(millis() - lastAction) < NW_EDITOR_TIMEOUT_MS) {
-      editorHeader("DAILY STEP GOAL");
+      editorHeader(nwText("DAILY STEP GOAL", "ЦЕЛЬ ШАГОВ НА ДЕНЬ"));
       char buf[24];
       snprintf(buf, sizeof(buf), "%lu", (unsigned long)value);
       display.setTextSize(3);
@@ -1175,7 +1150,7 @@ class NeuroWatch : public Watchy {
       display.setTextSize(1);
       label(60, 112, nwText("STEPS / DAY", "ШАГОВ В ДЕНЬ"));
       label(28, 137, nwText("MIN 1000     MAX 30000", "МИН 1000     МАКС 30000"));
-      display.display(true);
+      presentEditorFrame();
 
       const int button = waitEditorButton(lastAction);
       if (button == 0 || button == 4) {
