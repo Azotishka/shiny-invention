@@ -1128,32 +1128,37 @@ function putU32le(a, o, v) {
   a[o+3] = (v >>> 24) & 0xff;
 }
 
-async function readFlashSlowRom(loader, address, size, onProgress = null) {
-  const out = new Uint8Array(size);
-  const BLOCK = 64; // ESP32 ROM READ_FLASH_SLOW limit
-  for (let off = 0; off < size; off += BLOCK) {
-    const n = Math.min(BLOCK, size - off);
-    let pkt = loader._appendArray(
-      loader._intToByteArray((address + off) >>> 0),
-      loader._intToByteArray(n)
-    );
-    const r = await loader.checkCommand(
-      'ROM read flash block',
-      0x0E,
-      pkt,
-      0,
-      64,
-      3000
-    );
-    if (!r || r.length < n) {
-      throw new Error('ROM flash read short block @0x' + (address + off).toString(16));
-    }
-    out.set(r.slice(0, n), off);
-    if (onProgress && ((off + n) % 1024 === 0 || off + n === size)) {
-      onProgress(off + n, size);
-    }
+async function readFlashChecked(loader, address, size, onProgress = null) {
+  const start = address >>> 0;
+  const label = 'Flash @0x' + start.toString(16) + ' (' + size + ' байт)';
+
+  // The classic ESP32 ROM read command is fragile with CH9102 USB bridges.
+  // esptool-js uploads its temporary reader into RAM and acknowledges larger
+  // read packets. runStub() and readFlash() do not write to SPI Flash.
+  if (!loader.IS_STUB) {
+    log('READ-ONLY: запускаем временный загрузчик в RAM; Flash не изменяется.', 'info');
+    await loader.runStub();
+    log('READ-ONLY: загрузчик в RAM готов.', 'ok');
   }
-  return out;
+
+  log('READ-ONLY: читаем ' + label + ' через загрузчик в RAM…', 'info');
+  let data;
+  try {
+    data = await loader.readFlash(start, size, (_packet, done, total) => {
+      if (onProgress) onProgress(done, total);
+    });
+  } catch (e) {
+    throw new Error('READ-ONLY: не удалось прочитать ' + label + ': ' + (e?.message || e));
+  }
+
+  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data || []);
+  if (bytes.length !== size) {
+    throw new Error(
+      'READ-ONLY: короткое чтение ' + label + ': получено ' + bytes.length + ' байт.'
+    );
+  }
+  log('READ-ONLY: ' + label + ' прочитано полностью.', 'ok');
+  return bytes;
 }
 
 function parsePartitionTable(data) {
@@ -1350,6 +1355,7 @@ async function doReadOnlyPreflight() {
     assertSupportedNeuroWatchChip(session.chip);
     log('READ-ONLY: чип ' + session.chip, 'ok');
 
+    log('READ-ONLY: проверяем eFuse и защиту ESP32…', 'info');
     const efuse0 = (await session.loader.readReg(0x3FF5A000)) >>> 0;
     const efuse6 = (await session.loader.readReg(0x3FF5A018)) >>> 0;
     const flashCryptCnt = (efuse0 >>> 20) & 0x7F;
@@ -1362,7 +1368,7 @@ async function doReadOnlyPreflight() {
     }
 
     setProgress('Читаем заводскую таблицу разделов…', 20);
-    const table = await readFlashSlowRom(session.loader, 0x8000, 0x1000);
+    const table = await readFlashChecked(session.loader, 0x8000, 0x1000);
     const parts = parsePartitionTable(table);
     validatePartitionLayout(parts, 0x400000);
 
@@ -1376,7 +1382,7 @@ async function doReadOnlyPreflight() {
     }
 
     setProgress('Проверяем OTA-слоты…', 50);
-    const otadata = await readFlashSlowRom(session.loader, otadataPart.offset, 0x2000);
+    const otadata = await readFlashChecked(session.loader, otadataPart.offset, 0x2000);
     const choice = pickSafeOtaTarget(parts, otadata);
 
     const app = b64ToBytes(Android.readAssetBase64('app.bin'));
@@ -1438,6 +1444,7 @@ safe_do_flash = r'''async function doFlash() {
     // ESP32 classic security eFuses. Refuse raw OTA writes if flash encryption
     // or Secure Boot is enabled: this installer intentionally never modifies
     // keys/fuses or tries to bypass platform security.
+    log('Проверяем eFuse и защиту ESP32…', 'info');
     const efuse0 = (await session.loader.readReg(0x3FF5A000)) >>> 0;
     const efuse6 = (await session.loader.readReg(0x3FF5A018)) >>> 0;
     const flashCryptCnt = (efuse0 >>> 20) & 0x7F;
@@ -1453,7 +1460,7 @@ safe_do_flash = r'''async function doFlash() {
       );
     }
 
-    const table = await readFlashSlowRom(session.loader, 0x8000, 0x1000, (done,total) => {
+    const table = await readFlashChecked(session.loader, 0x8000, 0x1000, (done,total) => {
       setProgress('Таблица разделов: ' + Math.round(done*100/total) + '%', 3 + Math.round(done/total*7));
     });
     const partsInfo = parsePartitionTable(table);
@@ -1473,7 +1480,7 @@ safe_do_flash = r'''async function doFlash() {
       throw new Error('Совместимый NVS-раздел не найден. NeuroWatch OS не будет записана.');
     }
 
-    const otadata = await readFlashSlowRom(session.loader, otadataPart.offset, 0x2000, (done,total) => {
+    const otadata = await readFlashChecked(session.loader, otadataPart.offset, 0x2000, (done,total) => {
       setProgress('OTA metadata: ' + Math.round(done*100/total) + '%', 10 + Math.round(done/total*10));
     });
 
@@ -1517,9 +1524,12 @@ safe_do_flash = r'''async function doFlash() {
       return;
     }
 
-    // Switch from ROM to RAM stub only after all read-only validation succeeded.
-    log('Запускаем временный flasher stub…', 'info');
-    await session.loader.runStub();
+    // Read-only validation already uses this RAM-resident flasher. Keep the
+    // guard in case a future transport recovery reopened the ROM session.
+    if (!session.loader.IS_STUB) {
+      log('Повторно запускаем временный flasher в RAM…', 'info');
+      await session.loader.runStub();
+    }
 
     setProgress('Записываем NeuroWatch OS…', 25);
     await writeFlashRaw(
@@ -1567,7 +1577,7 @@ safe_do_flash = r'''async function doFlash() {
   } catch (e) {
     log('Ошибка: ' + e.message, 'err');
     if (/Serial data stream stopped|Invalid head of packet|No serial data received/i.test(String(e.message))) {
-      log('Связь с ROM-загрузчиком потеряна до записи. Flash не переключалась.', 'info');
+      log('Связь с USB-загрузчиком потеряна до завершения операции. Flash не переключалась.', 'info');
     }
     log(
       'Установщик остановился безопасно. Если переключение OTA не было завершено, ' +
@@ -1774,7 +1784,7 @@ usb_manager_js = r'''
     try {
       const usb = Android.usbDiagnostics();
       const visibleLog = document.getElementById('log')?.innerText || '';
-      const text = 'NeuroWatch USB Update 1.1\nUSB=' + usb + '\n\nLOG:\n' + visibleLog;
+      const text = 'NeuroWatch USB Update 1.2\nUSB=' + usb + '\n\nLOG:\n' + visibleLog;
       const result = Android.copyText('NeuroWatch diagnostics', text);
       log(result === 'ok' ? 'Диагностика скопирована в буфер обмена.' : String(result), result === 'ok' ? 'ok' : 'err');
     } catch (e) {

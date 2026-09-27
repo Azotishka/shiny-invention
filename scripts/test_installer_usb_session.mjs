@@ -9,6 +9,50 @@ if (!htmlPath || !usbPath) {
 
 const html = readFileSync(htmlPath, 'utf8');
 const usb = readFileSync(usbPath, 'utf8');
+assert.doesNotMatch(html, /readFlashSlowRom|ROM read flash block/,
+  'partition reads must not use the fragile 64-byte ROM polling path');
+const readStart = html.indexOf('async function readFlashChecked(');
+const readEnd = html.indexOf('\nfunction parsePartitionTable', readStart);
+assert.ok(readStart >= 0 && readEnd > readStart, 'RAM-backed Flash reader was not found');
+
+const flashContext = { log() {} };
+vm.createContext(flashContext);
+vm.runInContext(html.slice(readStart, readEnd) +
+  '\nglobalThis.readFlashCheckedForTest = readFlashChecked;', flashContext);
+
+const expectedBytes = Uint8Array.from({ length: 32 }, (_, i) => (i * 7) & 0xff);
+let stubRuns = 0;
+let readCalls = 0;
+const progress = [];
+const readOnlyLoader = {
+  IS_STUB: false,
+  async runStub() { stubRuns++; this.IS_STUB = true; },
+  async readFlash(address, size, onPacket) {
+    readCalls++;
+    assert.equal(address, 0x8000);
+    assert.equal(size, expectedBytes.length);
+    onPacket(new Uint8Array(1), size, size);
+    return expectedBytes;
+  },
+};
+const readBytes = await flashContext.readFlashCheckedForTest(
+  readOnlyLoader, 0x8000, expectedBytes.length,
+  (done, total) => progress.push([done, total]));
+assert.deepEqual(Array.from(readBytes), Array.from(expectedBytes));
+assert.equal(stubRuns, 1, 'reader did not start the RAM stub for a ROM session');
+assert.equal(readCalls, 1);
+assert.deepEqual(progress, [[expectedBytes.length, expectedBytes.length]]);
+
+const shortRead = {
+  IS_STUB: true,
+  async readFlash() { return new Uint8Array(expectedBytes.length - 1); },
+};
+await assert.rejects(
+  flashContext.readFlashCheckedForTest(shortRead, 0x8000, expectedBytes.length),
+  /короткое чтение/i,
+  'truncated Flash reads must stop before partition data is parsed'
+);
+
 const start = html.indexOf('class AndroidSerialPort {');
 const end = html.indexOf('\nconst terminal =', start);
 assert.ok(start >= 0 && end > start, 'WebSerial adapter was not found');
@@ -46,4 +90,4 @@ await first.close();
 assert.equal(second._closed, false, 'late close of a previous stream closed the new session');
 context.disconnectCurrentTransport();
 assert.equal(second._closed, true, 'second stream did not close at its own disconnect');
-console.log('USB session lifecycle: OK');
+console.log('USB session lifecycle and read-only Flash reader: OK');

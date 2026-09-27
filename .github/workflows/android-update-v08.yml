@@ -1,4 +1,4 @@
-name: NeuroWatch v1.1 USB Updater
+name: NeuroWatch v1.2 USB Updater
 
 on:
   workflow_dispatch:
@@ -120,8 +120,15 @@ jobs:
           from pathlib import Path
           h = Path("app/src/main/assets/flash.html").read_text()
           do_flash = h[h.index("async function doFlash() {"):h.index("\nasync function doErase()", h.index("async function doFlash() {"))]
+          preflight = h[h.index("async function doReadOnlyPreflight() {"):h.index("\nasync function", h.index("async function doReadOnlyPreflight() {"))]
           assert "ОБНОВИТЬ ДО NEUROWATCH OS v1.0" in h
           assert "const choice = pickSafeOtaTarget(partsInfo, otadata);" in do_flash
+          assert "async function readFlashChecked(" in h
+          assert "await loader.readFlash(start, size," in h
+          assert "await loader.runStub();" in h
+          assert "readFlashSlowRom" not in h
+          assert do_flash.count("readFlashChecked(") == 2
+          assert preflight.count("readFlashChecked(") == 2
           assert "flashMd5sum(choice.target.offset, app.length)" in do_flash
           assert "address: choice.target.offset" in do_flash
           assert "writeExact4kSector(session.loader, otadataPart.offset + copyStart, sector)" in do_flash
@@ -129,9 +136,9 @@ jobs:
           assert "bootloader.bin" not in do_flash
           assert "partitions.bin" not in do_flash
           s = h[h.index("<script>")+8:h.rindex("</script>")]
-          Path("/tmp/neurowatch-v11-updater.js").write_text(s)
+          Path("/tmp/neurowatch-v12-updater.js").write_text(s)
           PY
-          node --check /tmp/neurowatch-v11-updater.js
+          node --check /tmp/neurowatch-v12-updater.js
           node ../scripts/test_installer_usb_session.mjs app/src/main/assets/flash.html app/src/main/java/io/github/drakosha/espflash/UsbSerialManager.kt
           test -s app/src/main/assets/app.bin
 
@@ -142,22 +149,22 @@ jobs:
           set -euo pipefail
           gradle --no-daemon :app:assembleDebug \
             -PappId=ru.neurogazette.neurowatchupdate11 \
-            -PappLabel='NeuroWatch USB Update 1.1' \
-            -PversionName=1.1 \
-            -PversionCode=11
+            -PappLabel='NeuroWatch USB Update 1.2' \
+            -PversionName=1.2 \
+            -PversionCode=12
 
           mkdir -p ../release
-          cp app/build/outputs/apk/debug/app-debug.apk ../release/NeuroWatch-Updater-v1.1.apk
+          cp app/build/outputs/apk/debug/app-debug.apk ../release/NeuroWatch-Updater-v1.2.apk
           cp app/src/main/assets/app.bin ../release/NeuroWatch-OS-v1.0-app.bin
           (cd ../release && sha256sum *.apk *.bin > SHA256SUMS.txt)
           printf '%s\n' \
-            'USB updater v1.1 installs NeuroWatch OS v1.0 and isolates serial sessions across reconnects.' \
+            'USB updater v1.2 reads partition metadata through the esptool-js RAM stub and isolates serial sessions across reconnects.' \
             'The updater does not erase the 4MB flash and does not rewrite the bootloader or partition table.' \
             'It verifies the new app by MD5 and then performs a normal boot reset.' \
             > ../release/READ_FIRST.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NeuroWatch-Updater-v1.1
+          name: NeuroWatch-Updater-v1.2
           path: release/
           if-no-files-found: error
