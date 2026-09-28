@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
@@ -15,24 +16,59 @@ const readStart = html.indexOf('async function readFlashChecked(');
 const readEnd = html.indexOf('\nfunction parsePartitionTable', readStart);
 assert.ok(readStart >= 0 && readEnd > readStart, 'RAM-backed Flash reader was not found');
 
-const flashContext = { log() {} };
+const emittedLogs = [];
+const flashContext = {
+  Uint8Array,
+  log(message) { emittedLogs.push(String(message)); },
+  bytesToB64(bytes) { return Buffer.from(bytes).toString('base64'); },
+  Android: {
+    md5Base64(base64) {
+      return createHash('md5').update(Buffer.from(base64, 'base64')).digest('hex');
+    },
+  },
+};
 vm.createContext(flashContext);
 vm.runInContext(html.slice(readStart, readEnd) +
   '\nglobalThis.readFlashCheckedForTest = readFlashChecked;', flashContext);
 
-const expectedBytes = Uint8Array.from({ length: 32 }, (_, i) => (i * 7) & 0xff);
+const expectedBytes = Uint8Array.from({ length: 128 }, (_, i) => (i * 7) & 0xff);
 let stubRuns = 0;
-let readCalls = 0;
 const progress = [];
+const acknowledgements = [];
+const int32 = value => Uint8Array.from([
+  value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff,
+]);
+const append = (left, right) => {
+  const result = new Uint8Array(left.length + right.length);
+  result.set(left, 0);
+  result.set(right, left.length);
+  return result;
+};
+const words = bytes => Array.from({ length: bytes.length / 4 }, (_, i) =>
+  (bytes[i * 4] | (bytes[i * 4 + 1] << 8) | (bytes[i * 4 + 2] << 16) |
+    (bytes[i * 4 + 3] << 24)) >>> 0);
+const digestBytes = createHash('md5').update(expectedBytes).digest();
+const responsePackets = [expectedBytes.slice(0, 64), expectedBytes.slice(64), new Uint8Array(digestBytes)];
+let responseIndex = 0;
+const originalTrace = function originalTransportTrace() {};
 const readOnlyLoader = {
   IS_STUB: false,
+  ESP_READ_FLASH: 0xd2,
+  FLASH_READ_TIMEOUT: 1000,
+  _appendArray: append,
+  _intToByteArray: int32,
   async runStub() { stubRuns++; this.IS_STUB = true; },
-  async readFlash(address, size, onPacket) {
-    readCalls++;
-    assert.equal(address, 0x8000);
-    assert.equal(size, expectedBytes.length);
-    onPacket(new Uint8Array(1), size, size);
-    return expectedBytes;
+  async checkCommand(name, op, request) {
+    assert.equal(name, 'read flash (64-byte packets)');
+    assert.equal(op, 0xd2);
+    assert.deepEqual(words(request), [0x8000, expectedBytes.length, 4096, 64]);
+    return 0;
+  },
+  transport: {
+    tracing: false,
+    trace: originalTrace,
+    async read() { return responsePackets[responseIndex++]; },
+    async write(ack) { acknowledgements.push(words(ack)[0]); },
   },
 };
 const readBytes = await flashContext.readFlashCheckedForTest(
@@ -40,18 +76,61 @@ const readBytes = await flashContext.readFlashCheckedForTest(
   (done, total) => progress.push([done, total]));
 assert.deepEqual(Array.from(readBytes), Array.from(expectedBytes));
 assert.equal(stubRuns, 1, 'reader did not start the RAM stub for a ROM session');
-assert.equal(readCalls, 1);
+assert.deepEqual(acknowledgements, [64, 128], 'reader did not ACK each 64-byte packet');
 assert.deepEqual(progress, [[expectedBytes.length, expectedBytes.length]]);
+assert.equal(responseIndex, 3, 'reader did not consume the trailing MD5 frame');
+assert.equal(readOnlyLoader.transport.tracing, false, 'temporary USB tracing was not restored');
+assert.equal(readOnlyLoader.transport.trace, originalTrace,
+  'the original transport trace callback was not restored');
 
-const shortRead = {
+const corruptPackets = [new Uint8Array(64), new Uint8Array(64), new Uint8Array(16)];
+let corruptIndex = 0;
+const corruptRead = {
   IS_STUB: true,
-  async readFlash() { return new Uint8Array(expectedBytes.length - 1); },
+  ESP_READ_FLASH: 0xd2,
+  FLASH_READ_TIMEOUT: 1000,
+  _appendArray: append,
+  _intToByteArray: int32,
+  async checkCommand() { return 0; },
+  transport: {
+    tracing: false,
+    trace() {},
+    async read() { return corruptPackets[corruptIndex++]; },
+    async write() {},
+  },
 };
 await assert.rejects(
-  flashContext.readFlashCheckedForTest(shortRead, 0x8000, expectedBytes.length),
-  /короткое чтение/i,
-  'truncated Flash reads must stop before partition data is parsed'
+  flashContext.readFlashCheckedForTest(corruptRead, 0x8000, expectedBytes.length),
+  /контрольная сумма Flash не совпала/i,
+  'mismatched Flash read digest must stop before partition data is parsed'
 );
+
+const invalidTransport = {
+  IS_STUB: true,
+  ESP_READ_FLASH: 0xd2,
+  FLASH_READ_TIMEOUT: 1000,
+  _appendArray: append,
+  _intToByteArray: int32,
+  async checkCommand() { return 0; },
+  transport: {
+    tracing: false,
+    trace() {},
+    async read() {
+      this.trace('Read invalid data: ff ff ff');
+      throw new Error('Invalid head of packet (0xff)');
+    },
+    async write() {},
+  },
+};
+await assert.rejects(
+  flashContext.readFlashCheckedForTest(invalidTransport, 0x8000, expectedBytes.length),
+  /Invalid head of packet/,
+  'transport framing errors should remain actionable'
+);
+assert.ok(emittedLogs.some(message => message.includes('READ-ONLY USB trace: Read invalid data: ff ff ff')),
+  'invalid USB bytes were not added to the diagnostic log');
+assert.equal(invalidTransport.transport.tracing, false,
+  'USB trace mode was left enabled after a failed read');
 
 const start = html.indexOf('class AndroidSerialPort {');
 const end = html.indexOf('\nconst terminal =', start);

@@ -105,6 +105,18 @@ replacement = '''    @JavascriptInterface
         }
     }
 
+    @JavascriptInterface
+    fun md5Base64(data: String): String {
+        return try {
+            val bytes = Base64.decode(data, Base64.NO_WRAP)
+            MessageDigest.getInstance("MD5").digest(bytes)
+                .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        } catch (e: Exception) {
+            Log.e(TAG, "md5Base64 failed", e)
+            ""
+        }
+    }
+
     private var backupUri: Uri? = null
     private var backupStream: java.io.OutputStream? = null
     private var backupDisplayName: String = ""
@@ -1133,22 +1145,71 @@ async function readFlashChecked(loader, address, size, onProgress = null) {
   const label = 'Flash @0x' + start.toString(16) + ' (' + size + ' байт)';
 
   // The classic ESP32 ROM read command is fragile with CH9102 USB bridges.
-  // esptool-js uploads its temporary reader into RAM and acknowledges larger
-  // read packets. runStub() and readFlash() do not write to SPI Flash.
+  // esptool-js uploads its temporary reader into RAM. Loading the stub and
+  // running READ_FLASH only reads the chip and never writes SPI Flash.
   if (!loader.IS_STUB) {
     log('READ-ONLY: запускаем временный загрузчик в RAM; Flash не изменяется.', 'info');
     await loader.runStub();
     log('READ-ONLY: загрузчик в RAM готов.', 'ok');
   }
 
-  log('READ-ONLY: читаем ' + label + ' через загрузчик в RAM…', 'info');
-  let data;
+  // Match esptool's conservative ESP32 stub read profile. Older PICO-D4 stubs
+  // and CH9102 bridges can lose framing with esptool-js's 1024-byte packets.
+  const packetSize = 64;
+  const transport = loader.transport;
+  const previousTracing = transport.tracing;
+  const previousTrace = transport.trace;
+  transport.tracing = true;
+  transport.trace = message => {
+    if (/^(Read invalid data:|Remaining data in serial buffer:)/.test(message)) {
+      log('READ-ONLY USB trace: ' + String(message).slice(0, 260), 'err');
+    }
+  };
+
+  log('READ-ONLY: читаем ' + label + ' через RAM-stub (пакеты 64 байта)…', 'info');
+  let data = new Uint8Array(0);
   try {
-    data = await loader.readFlash(start, size, (_packet, done, total) => {
-      if (onProgress) onProgress(done, total);
-    });
+    let request = loader._appendArray(
+      loader._intToByteArray(start), loader._intToByteArray(size)
+    );
+    request = loader._appendArray(request, loader._intToByteArray(4096));
+    request = loader._appendArray(request, loader._intToByteArray(packetSize));
+    const result = await loader.checkCommand(
+      'read flash (64-byte packets)', loader.ESP_READ_FLASH, request
+    );
+    if (result !== 0) throw new Error('stub вернул статус ' + result);
+
+    while (data.length < size) {
+      const packet = await transport.read(loader.FLASH_READ_TIMEOUT);
+      if (!(packet instanceof Uint8Array) || packet.length === 0) {
+        throw new Error('stub прислал пустой пакет данных');
+      }
+      if (packet.length > packetSize || data.length + packet.length > size) {
+        throw new Error('неожиданный размер пакета: ' + packet.length + ' байт');
+      }
+      data = loader._appendArray(data, packet);
+      await transport.write(loader._intToByteArray(data.length));
+      if (onProgress && (data.length % 1024 === 0 || data.length === size)) {
+        onProgress(data.length, size);
+      }
+    }
+
+    // The ESP32 stub sends a raw 16-byte MD5 frame after the final ACK.
+    const digest = await transport.read(loader.FLASH_READ_TIMEOUT);
+    if (!(digest instanceof Uint8Array) || digest.length !== 16) {
+      throw new Error('контрольный MD5-пакет имеет неверную длину');
+    }
+    const expectedMd5 = Array.from(digest, b => b.toString(16).padStart(2, '0')).join('');
+    const actualMd5 = Android.md5Base64(bytesToB64(data));
+    if (!actualMd5 || actualMd5.toLowerCase() !== expectedMd5) {
+      throw new Error('контрольная сумма Flash не совпала');
+    }
   } catch (e) {
     throw new Error('READ-ONLY: не удалось прочитать ' + label + ': ' + (e?.message || e));
+  } finally {
+    transport.tracing = previousTracing;
+    if (previousTrace) transport.trace = previousTrace;
+    else delete transport.trace;
   }
 
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data || []);
@@ -1784,7 +1845,7 @@ usb_manager_js = r'''
     try {
       const usb = Android.usbDiagnostics();
       const visibleLog = document.getElementById('log')?.innerText || '';
-      const text = 'NeuroWatch USB Update 1.2\nUSB=' + usb + '\n\nLOG:\n' + visibleLog;
+      const text = 'NeuroWatch USB Update 1.3\nUSB=' + usb + '\n\nLOG:\n' + visibleLog;
       const result = Android.copyText('NeuroWatch diagnostics', text);
       log(result === 'ok' ? 'Диагностика скопирована в буфер обмена.' : String(result), result === 'ok' ? 'ok' : 'err');
     } catch (e) {

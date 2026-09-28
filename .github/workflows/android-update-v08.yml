@@ -1,4 +1,4 @@
-name: NeuroWatch v1.2 USB Updater
+name: NeuroWatch v1.3 USB Updater
 
 on:
   workflow_dispatch:
@@ -119,12 +119,17 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           h = Path("app/src/main/assets/flash.html").read_text()
+          bridge = Path("app/src/main/java/io/github/drakosha/espflash/JsBridge.kt").read_text()
           do_flash = h[h.index("async function doFlash() {"):h.index("\nasync function doErase()", h.index("async function doFlash() {"))]
           preflight = h[h.index("async function doReadOnlyPreflight() {"):h.index("\nasync function", h.index("async function doReadOnlyPreflight() {"))]
           assert "ОБНОВИТЬ ДО NEUROWATCH OS v1.0" in h
           assert "const choice = pickSafeOtaTarget(partsInfo, otadata);" in do_flash
           assert "async function readFlashChecked(" in h
-          assert "await loader.readFlash(start, size," in h
+          assert "const packetSize = 64;" in h
+          assert "await transport.write(loader._intToByteArray(data.length));" in h
+          assert "const digest = await transport.read(loader.FLASH_READ_TIMEOUT);" in h
+          assert "Android.md5Base64(bytesToB64(data))" in h
+          assert "fun md5Base64(data: String): String" in bridge
           assert "await loader.runStub();" in h
           assert "readFlashSlowRom" not in h
           assert do_flash.count("readFlashChecked(") == 2
@@ -149,22 +154,22 @@ jobs:
           set -euo pipefail
           gradle --no-daemon :app:assembleDebug \
             -PappId=ru.neurogazette.neurowatchupdate11 \
-            -PappLabel='NeuroWatch USB Update 1.2' \
-            -PversionName=1.2 \
-            -PversionCode=12
+          -PappLabel='NeuroWatch USB Update 1.3' \
+          -PversionName=1.3 \
+          -PversionCode=13
 
           mkdir -p ../release
-          cp app/build/outputs/apk/debug/app-debug.apk ../release/NeuroWatch-Updater-v1.2.apk
+          cp app/build/outputs/apk/debug/app-debug.apk ../release/NeuroWatch-Updater-v1.3.apk
           cp app/src/main/assets/app.bin ../release/NeuroWatch-OS-v1.0-app.bin
           (cd ../release && sha256sum *.apk *.bin > SHA256SUMS.txt)
           printf '%s\n' \
-            'USB updater v1.2 reads partition metadata through the esptool-js RAM stub and isolates serial sessions across reconnects.' \
+            'USB updater v1.3 reads partition metadata through the esptool RAM stub in conservative 64-byte packets, acknowledges each packet, consumes the read digest, and isolates serial sessions across reconnects.' \
             'The updater does not erase the 4MB flash and does not rewrite the bootloader or partition table.' \
             'It verifies the new app by MD5 and then performs a normal boot reset.' \
             > ../release/READ_FIRST.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NeuroWatch-Updater-v1.2
+          name: NeuroWatch-Updater-v1.3
           path: release/
           if-no-files-found: error
