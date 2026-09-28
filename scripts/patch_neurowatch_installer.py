@@ -1140,6 +1140,68 @@ function putU32le(a, o, v) {
   a[o+3] = (v >>> 24) & 0xff;
 }
 
+async function readSlipPacketResync(transport, timeout, maxNoiseBytes = 256) {
+  let packet = null;
+  let escaping = false;
+  let skippedNoiseBytes = 0;
+  const deadline = Date.now() + timeout;
+
+  while (Date.now() < deadline) {
+    while (Date.now() < deadline && transport.buffer.length === 0) {
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+    if (transport.buffer.length === 0) {
+      throw new Error(skippedNoiseBytes
+        ? 'тайм-аут SLIP после ' + skippedNoiseBytes + ' байт шума перед границей пакета'
+        : 'тайм-аут ожидания SLIP-пакета');
+    }
+
+    const bytes = transport.buffer;
+    transport.buffer = new Uint8Array(0);
+    for (let i = 0; i < bytes.length; i++) {
+      const byte = bytes[i];
+      if (packet === null) {
+        if (byte === transport.SLIP_END) {
+          packet = new Uint8Array(0);
+        } else {
+          skippedNoiseBytes++;
+          if (skippedNoiseBytes > maxNoiseBytes) {
+            throw new Error('перед SLIP-пакетом пропущено более ' + maxNoiseBytes +
+              ' байт шума; чтение остановлено для защиты от неверной синхронизации');
+          }
+        }
+        continue;
+      }
+
+      if (escaping) {
+        escaping = false;
+        if (byte === transport.SLIP_ESC_END) {
+          packet = transport.appendArray(packet, new Uint8Array([transport.SLIP_END]));
+        } else if (byte === transport.SLIP_ESC_ESC) {
+          packet = transport.appendArray(packet, new Uint8Array([transport.SLIP_ESC]));
+        } else {
+          throw new Error('повреждённая SLIP-последовательность экранирования');
+        }
+      } else if (byte === transport.SLIP_ESC) {
+        escaping = true;
+      } else if (byte === transport.SLIP_END) {
+        if (packet.length === 0) {
+          // A repeated 0xc0 is both the empty frame's end and the next frame's start.
+          packet = new Uint8Array(0);
+          continue;
+        }
+        if (i + 1 < bytes.length) {
+          transport.buffer = transport.appendArray(bytes.slice(i + 1), transport.buffer);
+        }
+        return { packet, skippedNoiseBytes };
+      } else {
+        packet = transport.appendArray(packet, new Uint8Array([byte]));
+      }
+    }
+  }
+  throw new Error('тайм-аут чтения SLIP-пакета');
+}
+
 async function readFlashChecked(loader, address, size, onProgress = null) {
   const start = address >>> 0;
   const label = 'Flash @0x' + start.toString(16) + ' (' + size + ' байт)';
@@ -1180,7 +1242,12 @@ async function readFlashChecked(loader, address, size, onProgress = null) {
     if (result !== 0) throw new Error('stub вернул статус ' + result);
 
     while (data.length < size) {
-      const packet = await transport.read(loader.FLASH_READ_TIMEOUT);
+      const frame = await readSlipPacketResync(transport, loader.FLASH_READ_TIMEOUT);
+      const packet = frame.packet;
+      if (frame.skippedNoiseBytes > 0) {
+        log('READ-ONLY: восстановлена SLIP-синхронизация; пропущено ' +
+          frame.skippedNoiseBytes + ' байт USB-шума перед пакетом.', 'info');
+      }
       if (!(packet instanceof Uint8Array) || packet.length === 0) {
         throw new Error('stub прислал пустой пакет данных');
       }
@@ -1195,7 +1262,12 @@ async function readFlashChecked(loader, address, size, onProgress = null) {
     }
 
     // The ESP32 stub sends a raw 16-byte MD5 frame after the final ACK.
-    const digest = await transport.read(loader.FLASH_READ_TIMEOUT);
+    const digestFrame = await readSlipPacketResync(transport, loader.FLASH_READ_TIMEOUT);
+    const digest = digestFrame.packet;
+    if (digestFrame.skippedNoiseBytes > 0) {
+      log('READ-ONLY: восстановлена SLIP-синхронизация; пропущено ' +
+        digestFrame.skippedNoiseBytes + ' байт USB-шума перед MD5.', 'info');
+    }
     if (!(digest instanceof Uint8Array) || digest.length !== 16) {
       throw new Error('контрольный MD5-пакет имеет неверную длину');
     }
@@ -1845,7 +1917,7 @@ usb_manager_js = r'''
     try {
       const usb = Android.usbDiagnostics();
       const visibleLog = document.getElementById('log')?.innerText || '';
-      const text = 'NeuroWatch USB Update 1.3\nUSB=' + usb + '\n\nLOG:\n' + visibleLog;
+      const text = 'NeuroWatch USB Update 1.4\nUSB=' + usb + '\n\nLOG:\n' + visibleLog;
       const result = Android.copyText('NeuroWatch diagnostics', text);
       log(result === 'ok' ? 'Диагностика скопирована в буфер обмена.' : String(result), result === 'ok' ? 'ok' : 'err');
     } catch (e) {

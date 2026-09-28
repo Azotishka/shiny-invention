@@ -12,7 +12,7 @@ const html = readFileSync(htmlPath, 'utf8');
 const usb = readFileSync(usbPath, 'utf8');
 assert.doesNotMatch(html, /readFlashSlowRom|ROM read flash block/,
   'partition reads must not use the fragile 64-byte ROM polling path');
-const readStart = html.indexOf('async function readFlashChecked(');
+const readStart = html.indexOf('async function readSlipPacketResync(');
 const readEnd = html.indexOf('\nfunction parsePartitionTable', readStart);
 assert.ok(readStart >= 0 && readEnd > readStart, 'RAM-backed Flash reader was not found');
 
@@ -26,12 +26,15 @@ const flashContext = {
       return createHash('md5').update(Buffer.from(base64, 'base64')).digest('hex');
     },
   },
+  setTimeout,
 };
 vm.createContext(flashContext);
 vm.runInContext(html.slice(readStart, readEnd) +
   '\nglobalThis.readFlashCheckedForTest = readFlashChecked;', flashContext);
 
 const expectedBytes = Uint8Array.from({ length: 128 }, (_, i) => (i * 7) & 0xff);
+expectedBytes[13] = 0xc0;
+expectedBytes[14] = 0xdb;
 let stubRuns = 0;
 const progress = [];
 const acknowledgements = [];
@@ -49,8 +52,32 @@ const words = bytes => Array.from({ length: bytes.length / 4 }, (_, i) =>
     (bytes[i * 4 + 3] << 24)) >>> 0);
 const digestBytes = createHash('md5').update(expectedBytes).digest();
 const responsePackets = [expectedBytes.slice(0, 64), expectedBytes.slice(64), new Uint8Array(digestBytes)];
-let responseIndex = 0;
 const originalTrace = function originalTransportTrace() {};
+const slipFrame = payload => {
+  const encoded = [0xc0];
+  for (const byte of payload) {
+    if (byte === 0xc0) encoded.push(0xdb, 0xdc);
+    else if (byte === 0xdb) encoded.push(0xdb, 0xdd);
+    else encoded.push(byte);
+  }
+  encoded.push(0xc0);
+  return Uint8Array.from(encoded);
+};
+const framedBytes = packets => {
+  const frames = packets.map(slipFrame);
+  return frames.reduce(append, new Uint8Array(0));
+};
+const transportFor = (bytes, onWrite = async () => {}) => ({
+  tracing: false,
+  trace: originalTrace,
+  SLIP_END: 0xc0,
+  SLIP_ESC: 0xdb,
+  SLIP_ESC_END: 0xdc,
+  SLIP_ESC_ESC: 0xdd,
+  buffer: bytes,
+  appendArray: append,
+  async write(ack) { await onWrite(ack); },
+});
 const readOnlyLoader = {
   IS_STUB: false,
   ESP_READ_FLASH: 0xd2,
@@ -64,12 +91,8 @@ const readOnlyLoader = {
     assert.deepEqual(words(request), [0x8000, expectedBytes.length, 4096, 64]);
     return 0;
   },
-  transport: {
-    tracing: false,
-    trace: originalTrace,
-    async read() { return responsePackets[responseIndex++]; },
-    async write(ack) { acknowledgements.push(words(ack)[0]); },
-  },
+  transport: transportFor(append(Uint8Array.of(0xff, 0xff, 0xff, 0xc0), framedBytes(responsePackets)),
+    async ack => acknowledgements.push(words(ack)[0])),
 };
 const readBytes = await flashContext.readFlashCheckedForTest(
   readOnlyLoader, 0x8000, expectedBytes.length,
@@ -78,13 +101,13 @@ assert.deepEqual(Array.from(readBytes), Array.from(expectedBytes));
 assert.equal(stubRuns, 1, 'reader did not start the RAM stub for a ROM session');
 assert.deepEqual(acknowledgements, [64, 128], 'reader did not ACK each 64-byte packet');
 assert.deepEqual(progress, [[expectedBytes.length, expectedBytes.length]]);
-assert.equal(responseIndex, 3, 'reader did not consume the trailing MD5 frame');
+assert.equal(readOnlyLoader.transport.buffer.length, 0,
+  'reader did not consume the trailing MD5 frame');
 assert.equal(readOnlyLoader.transport.tracing, false, 'temporary USB tracing was not restored');
 assert.equal(readOnlyLoader.transport.trace, originalTrace,
   'the original transport trace callback was not restored');
 
 const corruptPackets = [new Uint8Array(64), new Uint8Array(64), new Uint8Array(16)];
-let corruptIndex = 0;
 const corruptRead = {
   IS_STUB: true,
   ESP_READ_FLASH: 0xd2,
@@ -92,12 +115,7 @@ const corruptRead = {
   _appendArray: append,
   _intToByteArray: int32,
   async checkCommand() { return 0; },
-  transport: {
-    tracing: false,
-    trace() {},
-    async read() { return corruptPackets[corruptIndex++]; },
-    async write() {},
-  },
+  transport: transportFor(framedBytes(corruptPackets)),
 };
 await assert.rejects(
   flashContext.readFlashCheckedForTest(corruptRead, 0x8000, expectedBytes.length),
@@ -105,31 +123,23 @@ await assert.rejects(
   'mismatched Flash read digest must stop before partition data is parsed'
 );
 
-const invalidTransport = {
+const noisyTransport = {
   IS_STUB: true,
   ESP_READ_FLASH: 0xd2,
   FLASH_READ_TIMEOUT: 1000,
   _appendArray: append,
   _intToByteArray: int32,
   async checkCommand() { return 0; },
-  transport: {
-    tracing: false,
-    trace() {},
-    async read() {
-      this.trace('Read invalid data: ff ff ff');
-      throw new Error('Invalid head of packet (0xff)');
-    },
-    async write() {},
-  },
+  transport: transportFor(new Uint8Array(257).fill(0xff)),
 };
 await assert.rejects(
-  flashContext.readFlashCheckedForTest(invalidTransport, 0x8000, expectedBytes.length),
-  /Invalid head of packet/,
-  'transport framing errors should remain actionable'
+  flashContext.readFlashCheckedForTest(noisyTransport, 0x8000, expectedBytes.length),
+  /более 256 байт шума/i,
+  'resynchronization must stop after its bounded noise allowance'
 );
-assert.ok(emittedLogs.some(message => message.includes('READ-ONLY USB trace: Read invalid data: ff ff ff')),
-  'invalid USB bytes were not added to the diagnostic log');
-assert.equal(invalidTransport.transport.tracing, false,
+assert.ok(emittedLogs.some(message => message.includes('пропущено 3 байт USB-шума')),
+  'recovered USB noise was not added to the diagnostic log');
+assert.equal(noisyTransport.transport.tracing, false,
   'USB trace mode was left enabled after a failed read');
 
 const start = html.indexOf('class AndroidSerialPort {');
