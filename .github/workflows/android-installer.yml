@@ -77,17 +77,6 @@ jobs:
           cd ..
           python3 scripts/patch_neurowatch_installer.py android-installer
 
-          # esptool-js 0.6.1: runStub() changes loader.IS_STUB in-place and
-          # returns the chip object, not a loader. Keep the original loader
-          # instance so readFlash/flashMd5sum remain available.
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("android-installer/app/src/main/assets/flash.html")
-          h = p.read_text()
-          h = h.replace("session.loader = await session.loader.runStub();", "await session.loader.runStub();")
-          p.write_text(h)
-          PY
-
           cp installer-assets/app.bin android-installer/app/src/main/assets/
           cat > android-installer/app/src/main/assets/firmware.json <<'JSON'
           {
@@ -117,9 +106,10 @@ jobs:
           assert h.count("async function doFlash() {") == 1
           assert "async function openChipRom()" in h
           assert "ROM read flash block" in h
-          assert "await session.loader.runStub()" in h
+          assert "await session.loader.runStub()" not in h
           assert "session.loader = await session.loader.runStub()" not in h
-          assert "session.loader.readFlash(0x8000, 0x1000" in h
+          assert "async function readFlashSlowRom(loader, address, size" in h
+          assert "ROM read flash block" in h
           assert "flashMd5sum(choice.target.offset, app.length)" in h
           assert "Bootloader, таблица разделов и текущая заводская прошивка НЕ будут перезаписаны." in h
           assert "async function makeFactoryBackup(session)" not in h
