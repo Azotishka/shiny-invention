@@ -1,0 +1,202 @@
+name: NeuroWatch Manager v1.5
+
+on:
+  push:
+    branches:
+      - neurowatch-manager-v15
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python tools
+        run: python -m pip install --disable-pip-version-check pyserial
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: arduino/setup-arduino-cli@v2
+
+      - name: Install ESP32 build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          INDEX=https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index --additional-urls "$INDEX"
+          arduino-cli core install esp32:esp32@2.0.15 --additional-urls "$INDEX"
+          arduino-cli lib install 'Watchy@1.4.7'
+          arduino-cli lib install 'DS3232RTC@2.0.1'
+          arduino-cli lib install 'WiFiManager@2.0.17'
+
+      - name: Build NeuroWatch firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build installer-assets
+          arduino-cli compile             --fqbn 'esp32:esp32:watchy:Revision=v20,PartitionScheme=min_spiffs'             --build-path "$PWD/build"             firmware/NeuroWatch_OS
+          cp build/NeuroWatch_OS.ino.bin installer-assets/app.bin
+          test -s installer-assets/app.bin
+
+      - name: Prepare Android source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/drakosha/esp-flash-android.git android-installer
+          cd android-installer
+          git checkout c4036ace9d2f5526e3535d1ac8bfb8ac3bafc23d
+          cd ..
+          python3 scripts/patch_neurowatch_installer.py android-installer
+          cp installer-assets/app.bin android-installer/app/src/main/assets/app.bin
+          cat > android-installer/app/src/main/assets/firmware.json <<'JSON'
+          {
+            "name": "NeuroWatch OS",
+            "version": "v1.5",
+            "parts": [
+              { "file": "app.bin", "offset": "0x0" }
+            ]
+          }
+          JSON
+
+      - name: Add Wi-Fi OTA to the stable USB interface
+        shell: bash
+        working-directory: android-installer
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("app/src/main/assets/flash.html")
+          s = p.read_text()
+
+          marker = '<div id="picker">'
+          card = r'''
+          <div class="card" id="wifiOtaCard" style="border-left-color:#4caf50">
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px">WI-FI OTA</div>
+            <div style="font-size:12px;line-height:1.55;color:#aaa;margin-bottom:10px">
+              Подключитесь телефоном к Wi-Fi сети часов <b>NeuroWatch-XXXX</b>.
+              Затем откройте веб-панель обновления часов.
+            </div>
+            <input id="otaHost" value="192.168.4.1"
+              inputmode="decimal" autocomplete="off"
+              style="width:100%;margin-bottom:8px"
+              aria-label="Адрес OTA">
+            <button class="secondary" id="otaOpenBtn" style="margin:0">
+              ОТКРЫТЬ WI-FI OTA
+            </button>
+            <div id="otaHint" style="font-size:11px;line-height:1.45;color:#777;margin-top:8px">
+              После подключения к точке доступа часы сами покажут SSID и пароль.
+              USB-обновление выше остаётся доступным.
+            </div>
+          </div>
+
+          '''
+          if marker not in s:
+              raise SystemExit("Wi-Fi insertion marker not found")
+          s = s.replace(marker, card + marker, 1)
+
+          script_marker = '</script>
+</body>'
+          js = r'''
+          <script>
+          (() => {
+            const btn = document.getElementById('otaOpenBtn');
+            const host = document.getElementById('otaHost');
+            if (!btn || !host) return;
+            btn.addEventListener('click', () => {
+              let value = (host.value || '192.168.4.1').trim();
+              value = value.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+              if (!value) value = '192.168.4.1';
+              const url = 'http://' + value + '/';
+              log('Открываю Wi-Fi OTA: ' + url, 'info');
+              window.location.href = url;
+            });
+          })();
+          </script>
+          '''
+          if script_marker not in s:
+              raise SystemExit("JS insertion marker not found")
+          s = s.replace(script_marker, js + '\n</script>\n</body>', 1)
+          s = s.replace('<title>ESP Flash</title>', '<title>NeuroWatch Manager 1.5</title>', 1)
+          p.write_text(s)
+          PY
+
+          node --check <(python3 - <<'PY'
+          from pathlib import Path
+          import re
+          h=Path("app/src/main/assets/flash.html").read_text()
+          scripts=re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>',h,re.S)
+          print("\n".join(scripts))
+          PY
+          )
+
+      - name: Bundle esptool-js
+        shell: bash
+        working-directory: android-installer
+        run: ./scripts/bundle-esptool.sh
+
+      - name: Verify USB and OTA invariants
+        shell: bash
+        working-directory: android-installer
+        run: |
+          set -euo pipefail
+          grep -q 'CH9102 1A86:55D4' app/src/main/assets/flash.html
+          grep -q 'requestUsbPermission' app/src/main/assets/flash.html
+          grep -q 'usbDiagnostics' app/src/main/assets/flash.html
+          grep -q 'wifiOtaCard' app/src/main/assets/flash.html
+          grep -q '192.168.4.1' app/src/main/assets/flash.html
+          grep -q 'otaOpenBtn' app/src/main/assets/flash.html
+          grep -q '"file": "app.bin"' app/src/main/assets/firmware.json
+          test ! -f app/src/main/assets/bootloader.bin
+          test ! -f app/src/main/assets/partitions.bin
+          test -s app/src/main/assets/app.bin
+
+      - name: Create release signing key
+        working-directory: android-installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          keytool -genkeypair -v             -keystore neurowatch-release.jks             -storepass neurowatch-v15             -keypass neurowatch-v15             -alias neurowatch             -keyalg RSA -keysize 4096             -validity 10000             -dname 'CN=NeuroWatch, O=NeuroWatch, C=RU'
+          cat > keystore.properties <<'EOF'
+          storeFile=neurowatch-release.jks
+          storePassword=neurowatch-v15
+          keyAlias=neurowatch
+          keyPassword=neurowatch-v15
+          EOF
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Build signed release APK
+        working-directory: android-installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon :app:assembleRelease             -PappId=ru.neurogazette.neurowatchmanager             -PappLabel='NeuroWatch Manager'             -PversionName=1.5             -PversionCode=15
+          mkdir -p ../release
+          cp app/build/outputs/apk/release/app-release.apk ../release/NeuroWatch-Manager-v1.5.apk
+          jarsigner -verify -verbose -certs ../release/NeuroWatch-Manager-v1.5.apk >/tmp/verify.txt
+          grep -q 'jar verified' /tmp/verify.txt
+          sha256sum ../release/NeuroWatch-Manager-v1.5.apk > ../release/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeuroWatch-Manager-v1.5
+          path: release/
+          if-no-files-found: error
