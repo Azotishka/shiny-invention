@@ -1212,8 +1212,19 @@ async function doReadOnlyPreflight() {
       throw new Error('Flash Encryption/Secure Boot включён — установка заблокирована.');
     }
 
+    // ROM READ_FLASH_SLOW is extremely sensitive on some CH9102/Android
+    // transports. We already proved ROM communication above; for read-only
+    // validation switch only the flasher implementation into RAM. The stub
+    // executes from IRAM/DRAM and does not modify SPI flash.
+    setProgress('Запускаем RAM flasher для стабильного чтения…', 12);
+    log('RAM flasher: запуск в памяти, Flash не изменяется.', 'info');
+    session.loader = await session.loader.runStub();
+    log('RAM flasher запущен. Переходим на стандартное чтение Flash.', 'ok');
+
     setProgress('Читаем заводскую таблицу разделов…', 20);
-    const table = await readFlashSlowRom(session.loader, 0x8000, 0x1000);
+    const table = await session.loader.readFlash(0x8000, 0x1000, (packet, done, total) => {
+      if (done === total) setProgress('Таблица разделов прочитана', 25);
+    });
     const parts = parsePartitionTable(table);
     validatePartitionLayout(parts, 0x400000);
 
@@ -1227,7 +1238,9 @@ async function doReadOnlyPreflight() {
     }
 
     setProgress('Проверяем OTA-слоты…', 50);
-    const otadata = await readFlashSlowRom(session.loader, otadataPart.offset, 0x2000);
+    const otadata = await session.loader.readFlash(otadataPart.offset, 0x2000, (packet, done, total) => {
+      if (done === total) setProgress('OTA metadata прочитана', 50);
+    });
     const choice = pickSafeOtaTarget(parts, otadata);
 
     const app = b64ToBytes(Android.readAssetBase64('app.bin'));
@@ -1304,7 +1317,11 @@ safe_do_flash = r'''async function doFlash() {
       );
     }
 
-    const table = await readFlashSlowRom(session.loader, 0x8000, 0x1000, (done,total) => {
+    log('Запускаем RAM flasher для чтения без изменения Flash…', 'info');
+    session.loader = await session.loader.runStub();
+    log('RAM flasher запущен.', 'ok');
+
+    const table = await session.loader.readFlash(0x8000, 0x1000, (packet, done, total) => {
       setProgress('Таблица разделов: ' + Math.round(done*100/total) + '%', 3 + Math.round(done/total*7));
     });
     const partsInfo = parsePartitionTable(table);
@@ -1324,7 +1341,7 @@ safe_do_flash = r'''async function doFlash() {
       throw new Error('Совместимый NVS-раздел не найден. NeuroWatch OS не будет записана.');
     }
 
-    const otadata = await readFlashSlowRom(session.loader, otadataPart.offset, 0x2000, (done,total) => {
+    const otadata = await session.loader.readFlash(otadataPart.offset, 0x2000, (packet, done, total) => {
       setProgress('OTA metadata: ' + Math.round(done*100/total) + '%', 10 + Math.round(done/total*10));
     });
 
@@ -1368,10 +1385,8 @@ safe_do_flash = r'''async function doFlash() {
       return;
     }
 
-    // Switch from ROM to RAM stub only after all read-only validation succeeded.
-    log('Запускаем временный flasher stub…', 'info');
-    await session.loader.runStub();
-
+    // The same RAM stub used for read-only validation remains active. No second
+    // ROM reconnect is necessary, avoiding another CH9102 reset/stream race.
     setProgress('Записываем NeuroWatch OS…', 25);
     await writeFlashRaw(
       session.loader,
