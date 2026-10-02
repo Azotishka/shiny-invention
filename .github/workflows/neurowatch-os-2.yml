@@ -1,0 +1,58 @@
+name: NeuroWatch OS 0.9 UI Build
+
+on:
+  push:
+    branches:
+      - neurowatch-os-2-ui
+    paths:
+      - 'firmware/**'
+      - 'tests/test_neurowatch_layout.py'
+      - '.github/workflows/neurowatch-os-2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-firmware:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify UI layout contract
+        run: python tests/test_neurowatch_layout.py
+
+      - uses: arduino/setup-arduino-cli@v2
+
+      - name: Install pinned ESP32 core and Watchy libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          INDEX=https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index --additional-urls "$INDEX"
+          arduino-cli core install esp32:esp32@2.0.15 --additional-urls "$INDEX"
+          arduino-cli lib install 'Watchy@1.4.7'
+          arduino-cli lib install 'DS3232RTC@2.0.1'
+          arduino-cli lib install 'WiFiManager@2.0.17'
+
+      - name: Compile NeuroWatch OS 0.9
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          arduino-cli compile             --fqbn 'esp32:esp32:watchy:Revision=v20,PartitionScheme=min_spiffs'             --build-path "$PWD/build"             firmware/NeuroWatch_OS
+          test -s build/NeuroWatch_OS.ino.bin
+          mkdir -p release
+          cp build/NeuroWatch_OS.ino.bin release/NeuroWatch-OS-v0.9-ui.bin
+          sha256sum release/NeuroWatch-OS-v0.9-ui.bin > release/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeuroWatch-OS-v0.9-ui
+          path: release/
+          if-no-files-found: error
