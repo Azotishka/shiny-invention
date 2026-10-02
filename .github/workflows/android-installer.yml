@@ -49,10 +49,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build installer-assets
-          arduino-cli compile \
-            --fqbn 'esp32:esp32:watchy:Revision=v20,PartitionScheme=min_spiffs' \
-            --build-path "$PWD/build" \
-            firmware/NeuroWatch_OS
+          arduino-cli compile             --fqbn 'esp32:esp32:watchy:Revision=v20,PartitionScheme=min_spiffs'             --build-path "$PWD/build"             firmware/NeuroWatch_OS
           python3 scripts/check_ota.py build/NeuroWatch_OS.ino.bin
           cp build/NeuroWatch_OS.ino.bin installer-assets/app.bin
           ls -lh installer-assets
@@ -79,6 +76,18 @@ jobs:
           git checkout c4036ace9d2f5526e3535d1ac8bfb8ac3bafc23d
           cd ..
           python3 scripts/patch_neurowatch_installer.py android-installer
+
+          # esptool-js 0.6.1: runStub() changes loader.IS_STUB in-place and
+          # returns the chip object, not a loader. Keep the original loader
+          # instance so readFlash/flashMd5sum remain available.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("android-installer/app/src/main/assets/flash.html")
+          h = p.read_text()
+          h = h.replace("session.loader = await session.loader.runStub();", "await session.loader.runStub();")
+          p.write_text(h)
+          PY
+
           cp installer-assets/app.bin android-installer/app/src/main/assets/
           cat > android-installer/app/src/main/assets/firmware.json <<'JSON'
           {
@@ -108,7 +117,8 @@ jobs:
           assert h.count("async function doFlash() {") == 1
           assert "async function openChipRom()" in h
           assert "ROM read flash block" in h
-          assert "session.loader = await session.loader.runStub()" in h
+          assert "await session.loader.runStub()" in h
+          assert "session.loader = await session.loader.runStub()" not in h
           assert "session.loader.readFlash(0x8000, 0x1000" in h
           assert "flashMd5sum(choice.target.offset, app.length)" in h
           assert "Bootloader, таблица разделов и текущая заводская прошивка НЕ будут перезаписаны." in h
@@ -130,7 +140,6 @@ jobs:
           assert "ПРОВЕРИТЬ ЧАСЫ БЕЗ ЗАПИСИ" in h
           assert "copyDiagBtn" in h
           assert "СКОПИРОВАТЬ ДИАГНОСТИКУ" in h
-          # The safe ROM path must not use esptool-js 0.6.1's 4-byte flashSpiAttach helper.
           safe = h[h.index("async function connectRomWithSignalSequence"):h.index("// ─── Прошивка")]
           assert ".flashSpiAttach(0)" not in safe
 
@@ -153,7 +162,6 @@ jobs:
           assert "fun requestUsbPermission(): String" in bridge
           assert "fun usbDiagnostics(): String" in bridge
           assert "fun copyText(label: String, text: String): String" in bridge
-          # v2 polling must not spam Android permission dialogs.
           cc_start = bridge.index("fun checkConnection(): String")
           cc_end = bridge.index("\n    @JavascriptInterface", cc_start)
           cc = bridge[cc_start:cc_end]
@@ -164,8 +172,6 @@ jobs:
 
           s = h[h.index("<script>")+8:h.rindex("</script>")]
           Path("/tmp/neurowatch-flash.js").write_text(s)
-
-          # Extract pure OTA-selection helpers for behavioral tests.
           hs = h.index("function u16le")
           he = h.index("// ─── Прошивка", hs)
           Path("/tmp/neurowatch-ota-helpers.js").write_text(h[hs:he])
@@ -186,23 +192,11 @@ jobs:
         working-directory: android-installer
         run: |
           set -euo pipefail
-          gradle --no-daemon :app:assembleDebug \
-            -PappId=ru.neurogazette.neurowatchinstaller \
-            -PappLabel='NeuroWatch Manager' \
-            -PversionName=2.0.1 \
-            -PversionCode=201
+          gradle --no-daemon :app:assembleDebug             -PappId=ru.neurogazette.neurowatchinstaller             -PappLabel='NeuroWatch Manager'             -PversionName=2.0.1             -PversionCode=201
           mkdir -p ../release-installer
           cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Manager-v2.0.1.apk
           (cd ../release-installer && sha256sum NeuroWatch-Manager-v2.0.1.apk > SHA256SUMS.txt)
-          printf '%s\n' \
-            'NeuroWatch Manager v2.0.1 for ESP32-PICO-D4 / 4MB + CH9102. Read-only preflight uses the RAM flasher stub to avoid ROM slow-read stream instability on Android.' \
-            'USB detection is diagnostic-first: raw Android enumeration is visible, USB permission is explicit, CH9102 has a CDC fallback driver, and stale USB handles are always closed before reconnect.' \
-            'The app separates raw USB diagnostics from flashing: installation stays disabled until the exact watch, permission, and serial driver are all ready.' \
-            'A read-only hardware preflight must successfully identify the ESP32 and validate the factory partition/OTA layout before the Install button can be enabled.' \
-            'It validates security eFuses, backs up partition table + OTA metadata, writes only an inactive OTA app slot, verifies it by MD5, then switches OTA metadata.' \
-            'It does NOT package or overwrite the bootloader or partition table, and destructive full-flash erase is disabled in the UI.' \
-            'If preflight, read, write, or MD5 verification fails before OTA switch, the existing active system remains selected.' \
-            > ../release-installer/READ_FIRST.txt
+          printf '%s\n'             'NeuroWatch Manager v2.0.1 for ESP32-PICO-D4 / 4MB + CH9102. Read-only preflight uses the RAM flasher stub to avoid ROM slow-read stream instability on Android.'             'USB detection is diagnostic-first: raw Android enumeration is visible, USB permission is explicit, CH9102 has a CDC fallback driver, and stale USB handles are always closed before reconnect.'             'The app separates raw USB diagnostics from flashing: installation stays disabled until the exact watch, permission, and serial driver are all ready.'             'A read-only hardware preflight must successfully identify the ESP32 and validate the factory partition/OTA layout before the Install button can be enabled.'             'It validates security eFuses, backs up partition table + OTA metadata, writes only an inactive OTA app slot, verifies it by MD5, then switches OTA metadata.'             'It does NOT package or overwrite the bootloader or partition table, and destructive full-flash erase is disabled in the UI.'             'If preflight, read, write, or MD5 verification fails before OTA switch, the existing active system remains selected.'             > ../release-installer/READ_FIRST.txt
 
       - uses: actions/upload-artifact@v4
         with:
