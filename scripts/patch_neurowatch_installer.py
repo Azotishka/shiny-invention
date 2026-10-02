@@ -949,48 +949,29 @@ async function openChipRom() {
 }
 
 async function attachEsp32FlashRom(loader) {
-  // Match the classic ESP32 no-stub esptool sequence:
-  // 1) SPI_ATTACH(0x0D) enables the default flash pins.
-  // 2) SPI_SET_PARAMS(0x0B) installs the 4 MB flash geometry in ROM RAM.
-  // The second step is important before arbitrary SPI READ commands;
-  // without it some ESP32-PICO ROM sessions return 0xFF for all addresses.
-  const attachPkt = loader._appendArray(
+  // ESP32 ROM: SPI_ATTACH is required before ROM flash commands.
+  // Do NOT send SPI_SET_PARAMS here: on some ESP32-PICO-D4 ROM revisions
+  // it returns ROM status 1,5 (invalid message format) even though the
+  // ROM is otherwise fully usable. READ_FLASH_SLOW does not require this
+  // extra command when the ROM has attached its default flash interface.
+  const pkt = loader._appendArray(
     loader._intToByteArray(0),
     new Uint8Array([0, 0, 0, 0])
   );
   await loader.checkCommand(
     'ROM SPI attach (8-byte ESP32 packet)',
     0x0D,
-    attachPkt,
+    pkt,
     0,
     0,
     5000
   );
-
-  const paramsPkt = loader._appendArray(
-    loader._intToByteArray(0),             // flash ID
-    loader._intToByteArray(0x400000),      // 4 MB total size
-    loader._intToByteArray(0x10000),       // 64 KB block
-    loader._intToByteArray(0x1000),        // 4 KB sector
-    loader._intToByteArray(0x100),         // 256-byte page
-    loader._intToByteArray(0xFFFF)         // status mask
-  );
-  await loader.checkCommand(
-    'ROM SPI set params (4 MB)',
-    0x0B,
-    paramsPkt,
-    0,
-    0,
-    5000
-  );
-
-  // Verify that the ROM can actually talk to the flash chip.
   const flashId = Number(await loader.readFlashId()) >>> 0;
   log('ROM Flash ID: 0x' + flashId.toString(16).padStart(6, '0'), 'info');
   if (flashId === 0 || flashId === 0xFFFFFF) {
     throw new Error('ROM не видит SPI Flash (Flash ID 0x' + flashId.toString(16).padStart(6, '0') + ')');
   }
-  log('SPI Flash подключена и параметры 4 MB установлены.', 'ok');
+  log('SPI Flash подключена через ROM.', 'ok');
 }
 
 function u16le(a, o) {
@@ -1041,7 +1022,8 @@ async function readFlashRomTiny(loader, address, size, onProgress = null) {
   const WORD = 4;
   for (let off = 0; off < size; off += WORD) {
     const n = Math.min(WORD, size - off);
-    if (Android.clearInput) Android.clearInput();
+    // Do not clear the transport immediately before a ROM command:
+    // on Android/CH9102 this can discard an already-buffered SLIP frame.
     const pkt = loader._appendArray(
       loader._intToByteArray((address + off) >>> 0),
       loader._intToByteArray(n)
