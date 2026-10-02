@@ -949,21 +949,48 @@ async function openChipRom() {
 }
 
 async function attachEsp32FlashRom(loader) {
-  // Espressif esptool.py's classic ESP32 ROM protocol:
-  // SPI_ATTACH(0x0D) payload = <I hspi_arg> + <BBBB is_legacy,0,0,0>.
-  // All-zero arguments select the normal embedded/default SPI flash pins.
-  let pkt = loader._appendArray(
+  // Match the classic ESP32 no-stub esptool sequence:
+  // 1) SPI_ATTACH(0x0D) enables the default flash pins.
+  // 2) SPI_SET_PARAMS(0x0B) installs the 4 MB flash geometry in ROM RAM.
+  // The second step is important before arbitrary SPI READ commands;
+  // without it some ESP32-PICO ROM sessions return 0xFF for all addresses.
+  const attachPkt = loader._appendArray(
     loader._intToByteArray(0),
     new Uint8Array([0, 0, 0, 0])
   );
   await loader.checkCommand(
     'ROM SPI attach (8-byte ESP32 packet)',
     0x0D,
-    pkt,
+    attachPkt,
     0,
     0,
     5000
   );
+
+  const paramsPkt = loader._appendArray(
+    loader._intToByteArray(0),             // flash ID
+    loader._intToByteArray(0x400000),      // 4 MB total size
+    loader._intToByteArray(0x10000),       // 64 KB block
+    loader._intToByteArray(0x1000),        // 4 KB sector
+    loader._intToByteArray(0x100),         // 256-byte page
+    loader._intToByteArray(0xFFFF)         // status mask
+  );
+  await loader.checkCommand(
+    'ROM SPI set params (4 MB)',
+    0x0B,
+    paramsPkt,
+    0,
+    0,
+    5000
+  );
+
+  // Verify that the ROM can actually talk to the flash chip.
+  const flashId = Number(await loader.readFlashId()) >>> 0;
+  log('ROM Flash ID: 0x' + flashId.toString(16).padStart(6, '0'), 'info');
+  if (flashId === 0 || flashId === 0xFFFFFF) {
+    throw new Error('ROM не видит SPI Flash (Flash ID 0x' + flashId.toString(16).padStart(6, '0') + ')');
+  }
+  log('SPI Flash подключена и параметры 4 MB установлены.', 'ok');
 }
 
 function u16le(a, o) {
