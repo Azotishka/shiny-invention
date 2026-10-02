@@ -1,4 +1,4 @@
-name: NeuroWatch OS 0.9 UI Build
+name: NeuroWatch OS 0.10 Wi-Fi OTA Build
 
 on:
   push:
@@ -30,6 +30,9 @@ jobs:
       - name: Verify UI layout contract
         run: python tests/test_neurowatch_layout.py
 
+      - name: Verify Wi-Fi OTA contract
+        run: python tests/test_neurowatch_wifi_ota.py
+
       - uses: arduino/setup-arduino-cli@v2
 
       - name: Install pinned ESP32 core and Watchy libraries
@@ -43,7 +46,7 @@ jobs:
           arduino-cli lib install 'DS3232RTC@2.0.1'
           arduino-cli lib install 'WiFiManager@2.0.17'
 
-      - name: Compile NeuroWatch OS 0.9
+      - name: Compile NeuroWatch OS 0.10 with Wi-Fi OTA
         shell: bash
         run: |
           set -euo pipefail
@@ -51,11 +54,11 @@ jobs:
           arduino-cli compile             --fqbn 'esp32:esp32:watchy:Revision=v20,PartitionScheme=min_spiffs'             --build-path "$PWD/build"             firmware/NeuroWatch_OS
           test -s build/NeuroWatch_OS.ino.bin
           mkdir -p release
-          cp build/NeuroWatch_OS.ino.bin release/NeuroWatch-OS-v0.9-ui.bin
+          cp build/NeuroWatch_OS.ino.bin release/NeuroWatch-OS-v0.10-wifi-ota.bin
           sha256sum release/NeuroWatch-OS-v0.9-ui.bin > release/SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NeuroWatch-OS-v0.9-ui
+          name: NeuroWatch-OS-v0.10-wifi-ota
           path: release/
           if-no-files-found: error
