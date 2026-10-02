@@ -193,7 +193,7 @@ jobs:
             -PversionCode=201
           mkdir -p ../release-installer
           cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Manager-v2.0.1.apk
-          (cd ../release-installer && sha256sum NeuroWatch-Manager-v2.0.apk > SHA256SUMS.txt)
+          (cd ../release-installer && sha256sum NeuroWatch-Manager-v2.0.1.apk > SHA256SUMS.txt)
           printf '%s\n' \
             'NeuroWatch Manager v2.0.1 for ESP32-PICO-D4 / 4MB + CH9102. Read-only preflight uses the RAM flasher stub to avoid ROM slow-read stream instability on Android.' \
             'USB detection is diagnostic-first: raw Android enumeration is visible, USB permission is explicit, CH9102 has a CDC fallback driver, and stale USB handles are always closed before reconnect.' \
