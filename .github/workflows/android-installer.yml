@@ -105,7 +105,7 @@ jobs:
             <p style="margin:0 0 10px">1. На часах выбери <b>WIFI UPDATE</b>.<br>2. Подключи телефон к сети <b>NeuroWatch-XXXX</b>.<br>3. Введи адрес ниже и открой OTA-панель.</p>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
               <input id="otaHost" value="192.168.4.1" inputmode="url" style="flex:1;min-width:180px;padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,.2);background:rgba(0,0,0,.2);color:inherit">
-              <button id="wifiOtaBtn" type="button" style="padding:10px 14px;border-radius:10px">ОТКРЫТЬ WI-FI OTA</button>
+              <button id="wifiOtaBtn" type="button" onclick="(function(){var h=document.getElementById('otaHost').value.trim().replace(/^https?:\\/\\//i,'').replace(/\\/+$/,'');window.location.href='http://'+(h||'192.168.4.1')+'/';})()" style="padding:10px 14px;border-radius:10px">ОТКРЫТЬ WI-FI OTA</button>
             </div>
             <small style="display:block;margin-top:8px;opacity:.72">USB/CH9102 остаётся доступен ниже.</small>
           </section>
@@ -114,10 +114,6 @@ jobs:
               if marker not in h:
                   raise SystemExit("picker marker not found")
               h = h.replace(marker, card + marker, 1)
-          script_marker = "</script>"
-          js = r'''\n<script>\n(() => {\n  const btn = document.getElementById('wifiOtaBtn');\n  const input = document.getElementById('otaHost');\n  if (!btn || !input) return;\n  btn.addEventListener('click', () => {\n    let host = input.value.trim().replace(/^https?:\\/\\//i, '').replace(/\\/+$/, '');\n    if (!host) host = '192.168.4.1';\n    window.location.href = 'http://' + host + '/';\n  });\n})();\n</script>\n'''
-          if "id='wifiOtaBtn'" not in h and 'id="wifiOtaBtn"' in h and "ОТКРЫТЬ WI-FI OTA" in h:
-              h = h.replace(script_marker, js + script_marker, 1)
           p.write_text(h)
           PY
 
