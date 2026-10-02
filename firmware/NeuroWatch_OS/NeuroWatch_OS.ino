@@ -95,70 +95,40 @@ class NeuroWatch : public Watchy {
  public:
   using Watchy::Watchy;
 
+  struct LayoutRect { int x; int y; int w; int h; };
+
+  // Fixed 200x200 regions. No two regions overlap.
+  static constexpr LayoutRect NW_FACE_HEADER {4, 4, 192, 22};
+  static constexpr LayoutRect NW_FACE_TIME {14, 30, 174, 44};
+  static constexpr LayoutRect NW_FACE_DATE {6, 78, 188, 18};
+  static constexpr LayoutRect NW_FACE_BATTERY {6, 99, 188, 19};
+  static constexpr LayoutRect NW_FACE_STEPS {6, 121, 188, 19};
+  static constexpr LayoutRect NW_FACE_ALARM {6, 143, 188, 19};
+  static constexpr LayoutRect NW_FACE_CONTROLS {6, 165, 188, 30};
+
   void drawWatchFace() override {
     if (!maybeDailyAlarm()) maybeHourlyBuzz();
+    display.setFullWindow(); display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK); display.setTextWrap(false);
+    display.drawRect(1,1,198,198,GxEPD_BLACK); display.drawLine(7,26,192,26,GxEPD_BLACK);
+    label(9,9,"NEUROWATCH"); label(154,9,"OS " NW_VERSION);
 
-    display.setFullWindow();
-    display.fillScreen(GxEPD_WHITE);
-    display.setTextColor(GxEPD_BLACK);
-    display.setTextWrap(false);
+    const uint8_t rawHour=currentTime.Hour%24;
+    uint8_t shownHour=rawHour; bool pm=false;
+    if(!nwUse24h){pm=rawHour>=12; shownHour=rawHour%12; if(shownHour==0) shownHour=12;}
+    digit(18,34,shownHour/10); digit(53,34,shownHour%10);
+    display.fillRect(91,47,4,4,GxEPD_BLACK); display.fillRect(91,61,4,4,GxEPD_BLACK);
+    digit(104,34,currentTime.Minute/10); digit(139,34,currentTime.Minute%10);
+    label(174,31,nwUse24h?"24":(pm?"PM":"AM"));
 
-    drawStandardWallpaper();
-
-    const uint8_t rawHour = currentTime.Hour % 24;
-    uint8_t shownHour = rawHour;
-    bool pm = false;
-    if (!nwUse24h) {
-      pm = rawHour >= 12;
-      shownHour = rawHour % 12;
-      if (shownHour == 0) shownHour = 12;
-    }
-
-    digit(20, 37, shownHour / 10);
-    digit(55, 37, shownHour % 10);
-    display.fillRect(93, 49, 4, 4, GxEPD_BLACK);
-    display.fillRect(93, 63, 4, 4, GxEPD_BLACK);
-    digit(106, 37, currentTime.Minute / 10);
-    digit(141, 37, currentTime.Minute % 10);
-
-    char buf[40];
-    const char *wd = weekdayName();
-    if (nwDateDmy) {
-      snprintf(buf, sizeof(buf), "%s  %02u.%02u.%04d",
-               wd,
-               (unsigned)currentTime.Day,
-               (unsigned)currentTime.Month,
-               tmYearToCalendar(currentTime.Year));
-    } else {
-      snprintf(buf, sizeof(buf), "%s  %02u/%02u/%04d",
-               wd,
-               (unsigned)currentTime.Month,
-               (unsigned)currentTime.Day,
-               tmYearToCalendar(currentTime.Year));
-    }
-    label(10, 90, buf);
-
-    if (!nwUse24h) {
-      label(171, 29, pm ? "PM" : "AM");
-    } else {
-      label(171, 29, "24");
-    }
-
-    drawBatteryWidget(10, 111);
-    drawStepsWidget(10, 137);
-
-    if (nwAlarmEnabled) {
-      char alarm[20];
-      snprintf(alarm, sizeof(alarm), "ALARM %02u:%02u",
-               (unsigned)nwAlarmHour, (unsigned)nwAlarmMinute);
-      label(10, 153, alarm);
-    } else {
-      label(10, 153, "ALARM OFF");
-    }
-
-    display.drawLine(8, 169, 191, 169, GxEPD_BLACK);
-    label(10, 176, "UP:STEPS  DN:STATUS");
-    label(10, 188, "MENU:SETTINGS   NW " NW_VERSION);
+    char buf[40]; const char *wd=weekdayName();
+    if(nwDateDmy) snprintf(buf,sizeof(buf),"%s   %02u.%02u.%04d",wd,(unsigned)currentTime.Day,(unsigned)currentTime.Month,tmYearToCalendar(currentTime.Year));
+    else snprintf(buf,sizeof(buf),"%s   %02u/%02u/%04d",wd,(unsigned)currentTime.Month,(unsigned)currentTime.Day,tmYearToCalendar(currentTime.Year));
+    label(9,91,buf); drawBatteryWidget(9,104); drawStepsWidget(9,126);
+    snprintf(buf,sizeof(buf),nwAlarmEnabled?"ALARM  %02u:%02u":"ALARM  OFF",(unsigned)nwAlarmHour,(unsigned)nwAlarmMinute);
+    label(9,148,buf);
+    display.drawLine(7,165,192,165,GxEPD_BLACK);
+    label(9,174,"UP STEPS   DN STATUS   BACK INFO"); label(9,188,"MENU SETTINGS");
   }
 
   void handleButtonPress() override {
@@ -451,15 +421,11 @@ class NeuroWatch : public Watchy {
   }
 
   void editorHeader(const char *title) {
-    display.fillScreen(GxEPD_WHITE);
-    display.setTextColor(GxEPD_BLACK);
-    display.setTextWrap(false);
-    display.drawRect(2, 2, 196, 196, GxEPD_BLACK);
-    label(9, 10, title);
-    display.drawLine(7, 26, 192, 26, GxEPD_BLACK);
-    label(9, 164, "UP/DN CHANGE   HOLD=FAST");
-    label(9, 177, "MENU: NEXT / SAVE");
-    label(9, 188, "BACK: CANCEL   AUTO:60S");
+    display.setFullWindow(); display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK); display.setTextWrap(false);
+    display.drawRect(1,1,198,198,GxEPD_BLACK); label(9,10,title);
+    display.drawLine(7,26,192,26,GxEPD_BLACK);
+    label(9,166,"UP/DN CHANGE   HOLD FAST"); label(9,179,"MENU NEXT / SAVE"); label(9,191,"BACK CANCEL");
   }
 
   void editTime(bool alarm = false) {
@@ -759,98 +725,41 @@ class NeuroWatch : public Watchy {
   }
 
   void showStepsCard() {
-    guiState = APP_STATE;
-    display.setFullWindow();
-    display.fillScreen(GxEPD_WHITE);
-    display.setTextColor(GxEPD_BLACK);
-    display.drawRect(2, 2, 196, 196, GxEPD_BLACK);
-    label(10, 10, "NW://STEPS");
-
-    const uint32_t steps = sensor.getCounter();
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%lu", (unsigned long)steps);
-
-    display.setTextSize(3);
-    display.setCursor(24, 62);
-    display.print(buf);
-    display.setTextSize(1);
-
-    snprintf(buf, sizeof(buf), "GOAL %lu", (unsigned long)nwStepGoal);
-    label(10, 112, buf);
-
-    const uint32_t capped = steps > nwStepGoal ? nwStepGoal : steps;
-    const int fill = (int)((capped * 176UL) / nwStepGoal);
-    display.drawRect(10, 130, 180, 14, GxEPD_BLACK);
-    if (fill > 0) display.fillRect(12, 132, fill, 10, GxEPD_BLACK);
-
-    label(10, 176, "ANY BUTTON: BACK");
-    display.display(false);
+    guiState=APP_STATE; display.setFullWindow(); display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK); display.setTextWrap(false);
+    display.drawRect(1,1,198,198,GxEPD_BLACK); label(9,10,"NW://STEPS"); display.drawLine(7,26,192,26,GxEPD_BLACK);
+    const uint32_t steps=sensor.getCounter(); char buf[32];
+    snprintf(buf,sizeof(buf),"%lu",(unsigned long)steps);
+    display.setTextSize(3); display.setCursor(24,64); display.print(buf); display.setTextSize(1);
+    snprintf(buf,sizeof(buf),"GOAL  %lu",(unsigned long)nwStepGoal); label(9,111,buf);
+    const uint32_t capped=steps>nwStepGoal?nwStepGoal:steps; const int fill=(int)((capped*176UL)/nwStepGoal);
+    display.drawRect(9,127,182,15,GxEPD_BLACK); if(fill>0) display.fillRect(11,129,fill,11,GxEPD_BLACK);
+    label(9,176,"ANY BUTTON: BACK"); display.display(false);
   }
 
   void showDiagnostics() {
-    guiState = APP_STATE;
-    RTC.read(currentTime);
-
-    display.setFullWindow();
-    display.fillScreen(GxEPD_WHITE);
-    display.setTextColor(GxEPD_BLACK);
-    display.drawRect(2, 2, 196, 196, GxEPD_BLACK);
-    label(10, 10, "NW://STATUS");
-    display.drawLine(8, 25, 191, 25, GxEPD_BLACK);
-
-    char buf[34];
-    const float voltage = getBatteryVoltage();
-    const int pct = batteryPercent(voltage);
-    snprintf(buf, sizeof(buf), "BATTERY: %d%%", pct < 0 ? 0 : pct);
-    label(10, 42, buf);
-
-    snprintf(buf, sizeof(buf), "STEPS: %lu", (unsigned long)sensor.getCounter());
-    label(10, 62, buf);
-
-    snprintf(buf, sizeof(buf), "HEAP: %lu B", (unsigned long)esp_get_free_heap_size());
-    label(10, 82, buf);
-
-    snprintf(buf, sizeof(buf), "FLASH: %lu MB",
-             (unsigned long)(ESP.getFlashChipSize() / (1024UL * 1024UL)));
-    label(10, 102, buf);
-
-    snprintf(buf, sizeof(buf), "CHIP: ESP32-PICO-D4");
-    label(10, 122, buf);
-
-    snprintf(buf, sizeof(buf), "RTC: %02u:%02u %02u.%02u",
-             (unsigned)currentTime.Hour,
-             (unsigned)currentTime.Minute,
-             (unsigned)currentTime.Day,
-             (unsigned)currentTime.Month);
-    label(10, 142, buf);
-
-    snprintf(buf, sizeof(buf), "ALARM: %s %02u:%02u",
-             nwAlarmEnabled ? "ON" : "OFF",
-             (unsigned)nwAlarmHour, (unsigned)nwAlarmMinute);
-    label(10, 162, buf);
-
-    label(10, 176, "RADIOS: OFF AT REST");
-    label(10, 188, "ANY BUTTON: BACK");
-    display.display(false);
+    guiState=APP_STATE; RTC.read(currentTime); display.setFullWindow(); display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK); display.setTextWrap(false); display.drawRect(1,1,198,198,GxEPD_BLACK);
+    label(9,10,"NW://STATUS"); display.drawLine(7,26,192,26,GxEPD_BLACK);
+    char buf[34]; const float voltage=getBatteryVoltage(); const int pct=batteryPercent(voltage);
+    snprintf(buf,sizeof(buf),"BATTERY  %d%%",pct<0?0:pct); label(9,43,buf);
+    snprintf(buf,sizeof(buf),"STEPS    %lu",(unsigned long)sensor.getCounter()); label(9,62,buf);
+    snprintf(buf,sizeof(buf),"HEAP     %lu B",(unsigned long)esp_get_free_heap_size()); label(9,81,buf);
+    snprintf(buf,sizeof(buf),"FLASH    %lu MB",(unsigned long)(ESP.getFlashChipSize()/(1024UL*1024UL))); label(9,100,buf);
+    label(9,119,"CHIP     ESP32-PICO-D4");
+    snprintf(buf,sizeof(buf),"RTC      %02u:%02u %02u.%02u",(unsigned)currentTime.Hour,(unsigned)currentTime.Minute,(unsigned)currentTime.Day,(unsigned)currentTime.Month); label(9,138,buf);
+    snprintf(buf,sizeof(buf),"ALARM    %s %02u:%02u",nwAlarmEnabled?"ON":"OFF",(unsigned)nwAlarmHour,(unsigned)nwAlarmMinute); label(9,157,buf);
+    display.drawLine(7,170,192,170,GxEPD_BLACK); label(9,180,"RADIOS OFF AT REST"); label(9,191,"ANY BUTTON: BACK"); display.display(false);
   }
 
   void showAbout() {
-    guiState = APP_STATE;
-    display.setFullWindow();
-    display.fillScreen(GxEPD_WHITE);
-    display.setTextColor(GxEPD_BLACK);
-    display.drawRect(2, 2, 196, 196, GxEPD_BLACK);
-    label(10, 10, "NEUROWATCH OS");
-    display.drawLine(8, 25, 191, 25, GxEPD_BLACK);
-
-    label(10, 45, "VERSION: " NW_VERSION);
-    label(10, 66, "FACE: STANDARD DAILY");
-    label(10, 87, "UPDATE: USB INSTALLER");
-    label(10, 108, "WIFI/BT: DISABLED AT REST");
-    label(10, 139, "EDITOR KEYS:");
-    label(10, 154, "UP/DN CHANGE; HOLD=FAST");
-    label(10, 169, "MENU:NEXT/SAVE  BACK:CANCEL");
-    label(10, 188, "ANY BUTTON: BACK");
+    guiState=APP_STATE; display.setFullWindow(); display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK); display.setTextWrap(false); display.drawRect(1,1,198,198,GxEPD_BLACK);
+    label(9,10,"NEUROWATCH OS"); display.drawLine(7,26,192,26,GxEPD_BLACK);
+    label(9,45,"VERSION  " NW_VERSION); label(9,65,"FACE     STANDARD DAILY");
+    label(9,85,"UPDATE   USB INSTALLER"); label(9,105,"RADIOS   OFF AT REST");
+    label(9,130,"CONTROLS"); label(9,145,"UP/DN CHANGE   HOLD FAST"); label(9,160,"MENU NEXT/SAVE  BACK CANCEL");
+    display.drawLine(7,171,192,171,GxEPD_BLACK); label(9,181,"ANY BUTTON: BACK"); label(9,191,"NEUROWATCH");
     display.display(false);
   }
 
