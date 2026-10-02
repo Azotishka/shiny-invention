@@ -1,6 +1,6 @@
 #pragma once
 
-#define NW_VERSION "0.8"
+#define NW_VERSION "0.9"
 
 // Persistent UI defaults used only when no saved preference exists.
 #define NW_DEFAULT_24H 1
