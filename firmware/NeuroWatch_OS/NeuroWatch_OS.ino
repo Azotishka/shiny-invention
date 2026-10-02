@@ -2,6 +2,8 @@
 #include <Watchy.h>
 #include <Preferences.h>
 #include <WiFi.h>
+#include <WebServer.h>
+#include <Update.h>
 #include "neuro_config.h"
 
 // NeuroWatch OS v0.8 - one standard face, quicker settings and low-overhead daily use.
@@ -174,7 +176,13 @@ class NeuroWatch : public Watchy {
   }
 
  private:
-  static constexpr int MENU_COUNT = 12;
+  static constexpr int MENU_COUNT = 13;
+  WebServer nwOtaServer{80};
+  bool nwOtaRunning = false;
+  bool nwOtaRestartPending = false;
+  String nwOtaSsid;
+  String nwOtaPassword;
+
 
   void drawStandardWallpaper() {
     display.drawRect(2, 2, 196, 196, GxEPD_BLACK);
@@ -315,6 +323,7 @@ class NeuroWatch : public Watchy {
       case 8: snprintf(buf, size, "STEP GOAL      %5lu", (unsigned long)nwStepGoal); break;
       case 9: snprintf(buf, size, "RESET STEPS"); break;
       case 10: snprintf(buf, size, "DIAGNOSTICS"); break;
+      case 11: snprintf(buf, size, "WIFI UPDATE"); break;
       default: snprintf(buf, size, "ABOUT / UPDATE"); break;
     }
   }
@@ -412,6 +421,9 @@ class NeuroWatch : public Watchy {
       case 10:
         nwAppReturnToMenu = 1;
         showDiagnostics();
+        return;
+      case 11:
+        startWifiOta();
         return;
       default:
         nwAppReturnToMenu = 1;
@@ -722,6 +734,149 @@ class NeuroWatch : public Watchy {
       delay(20);
     }
     showNeuroMenu(false);
+  }
+
+  void drawWifiOtaScreen(const char *status = "READY") {
+    guiState = APP_STATE;
+    display.setFullWindow();
+    display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK);
+    display.setTextWrap(false);
+    display.drawRect(1, 1, 198, 198, GxEPD_BLACK);
+    label(8, 10, "NW://WIFI UPDATE");
+    display.drawLine(7, 26, 192, 26, GxEPD_BLACK);
+    char buf[34];
+    snprintf(buf, sizeof(buf), "SSID  %s", nwOtaSsid.c_str());
+    label(8, 42, buf);
+    snprintf(buf, sizeof(buf), "PASS  %s", nwOtaPassword.c_str());
+    label(8, 61, buf);
+    label(8, 80, "OPEN  192.168.4.1");
+    label(8, 99, "IPHONE: CONNECT -> SAFARI");
+    label(8, 116, "THEN SELECT YOUR .BIN");
+    label(8, 138, status);
+    display.drawLine(7, 157, 192, 157, GxEPD_BLACK);
+    label(8, 170, "MENU: STOP / BACK: STOP");
+    label(8, 187, "USB UPDATE STILL AVAILABLE");
+    display.display(false);
+  }
+
+  void stopWifiOta() {
+    if (!nwOtaRunning) return;
+    nwOtaServer.stop();
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_OFF);
+    nwOtaRunning = false;
+    nwOtaRestartPending = false;
+  }
+
+  String otaPage() {
+    String html = F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><meta charset='utf-8'><title>NeuroWatch OTA</title><style>body{font-family:-apple-system,sans-serif;background:#f4f4f4;margin:0;padding:24px}main{max-width:520px;margin:auto;background:white;padding:22px;border-radius:18px;box-shadow:0 4px 20px #0002}h1{font-size:24px}input,button{width:100%;box-sizing:border-box;padding:14px;margin-top:12px;font-size:17px}button{background:#111;color:#fff;border:0;border-radius:10px}</style></head><body><main><h1>NeuroWatch OTA</h1><p>OS ");
+    html += NW_VERSION;
+    html += F("</p><p>Choose the firmware .bin file stored on your iPhone.</p><form method='POST' action='/update' enctype='multipart/form-data'><input name='firmware' type='file' accept='.bin,application/octet-stream' required><button type='submit'>Install firmware</button></form><p>Device: ");
+    html += WiFi.macAddress();
+    html += F("</p></main></body></html>");
+    return html;
+  }
+
+  void handleOtaRoot() {
+    nwOtaServer.send(200, "text/html; charset=utf-8", otaPage());
+  }
+
+  void handleOtaStatus() {
+    String json = F("{\"version\":\"");
+    json += NW_VERSION;
+    json += F("\",\"device\":\"");
+    json += WiFi.macAddress();
+    json += F("\",\"updateMode\":true,\"ip\":\"192.168.4.1\"}");
+    nwOtaServer.send(200, "application/json", json);
+  }
+
+  void handleOtaUpload() {
+    HTTPUpload &upload = nwOtaServer.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+      if (!upload.filename.endsWith(".bin") || upload.filename.length() < 5) {
+        Update.abort();
+        return;
+      }
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+        return;
+      }
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+      if (upload.currentSize > 0) {
+        const size_t written = Update.write(upload.buf, upload.currentSize);
+        if (written != upload.currentSize) {
+          Update.abort();
+        }
+      }
+    } else if (upload.status == UPLOAD_FILE_END) {
+      if (upload.totalSize == 0 || !Update.end(true)) {
+        Update.abort();
+        drawWifiOtaScreen("UPDATE FAILED - TRY AGAIN");
+        return;
+      }
+      nwOtaRestartPending = true;
+    } else if (upload.status == UPLOAD_FILE_ABORTED) {
+      Update.abort();
+      drawWifiOtaScreen("UPLOAD INTERRUPTED");
+    }
+  }
+
+  void handleOtaPost() {
+    if (nwOtaRestartPending) {
+      nwOtaServer.send(200, "text/html; charset=utf-8", "<html><body><h2>Update complete</h2><p>NeuroWatch is restarting...</p></body></html>");
+      delay(800);
+      ESP.restart();
+      return;
+    }
+    nwOtaServer.send(500, "text/plain; charset=utf-8", "Update failed. Current firmware remains active.");
+  }
+
+  void startWifiOta() {
+    guiState = APP_STATE;
+    nwOtaRunning = false;
+    nwOtaRestartPending = false;
+
+    const uint64_t mac = ESP.getEfuseMac();
+    char suffix[7];
+    snprintf(suffix, sizeof(suffix), "%06llX", (unsigned long long)(mac & 0xFFFFFFULL));
+    char password[16];
+    snprintf(password, sizeof(password), "NW-%s", suffix);
+    nwOtaSsid = String("NeuroWatch-") + suffix;
+    nwOtaPassword = password;
+
+    WiFi.mode(WIFI_AP);
+    IPAddress ip(192, 168, 4, 1);
+    IPAddress gateway(192, 168, 4, 1);
+    IPAddress subnet(255, 255, 255, 0);
+    WiFi.softAPConfig(ip, gateway, subnet);
+    if (!WiFi.softAP(nwOtaSsid.c_str(), nwOtaPassword.c_str(), 1, false, 1)) {
+      drawWifiOtaScreen("WIFI START FAILED");
+      WiFi.mode(WIFI_OFF);
+      return;
+    }
+
+    nwOtaServer.on("/", HTTP_GET, [this]() { handleOtaRoot(); });
+    nwOtaServer.on("/status", HTTP_GET, [this]() { handleOtaStatus(); });
+    nwOtaServer.on("/update", HTTP_POST, [this]() { handleOtaPost(); },
+                    [this]() { handleOtaUpload(); });
+    nwOtaServer.on("/reboot", HTTP_GET, [this]() {
+      nwOtaServer.send(200, "text/plain", "Rebooting...");
+      delay(200);
+      ESP.restart();
+    });
+    nwOtaServer.begin();
+    nwOtaRunning = true;
+    drawWifiOtaScreen("WAITING FOR IPHONE");
+    while (nwOtaRunning && !nwOtaRestartPending) {
+      nwOtaServer.handleClient();
+      if (digitalRead(MENU_BTN_PIN) || digitalRead(BACK_BTN_PIN)) {
+        waitAllReleased(1200);
+        stopWifiOta();
+        showNeuroMenu(false);
+        return;
+      }
+      delay(2);
+    }
   }
 
   void showStepsCard() {
