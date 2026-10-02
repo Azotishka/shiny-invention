@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - neurowatch-manager-v21
+      - neurowatch-manager-v15-proper
     paths:
       - 'firmware/**'
       - 'scripts/patch_neurowatch_installer.py'
@@ -83,12 +83,43 @@ jobs:
           cat > android-installer/app/src/main/assets/firmware.json <<'JSON'
           {
             "name": "NeuroWatch OS",
-            "version": "v2.1 CH9102 Recovery",
+            "version": "v1.5 CH9102 + Wi-Fi OTA",
             "parts": [
               { "file": "app.bin", "offset": "0x0" }
             ]
           }
           JSON
+
+      - name: Add Wi-Fi OTA panel
+        shell: bash
+        working-directory: android-installer
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("app/src/main/assets/flash.html")
+          h = p.read_text()
+          marker = '<div id="picker">'
+          card = r'''<section id="wifiOtaCard" style="margin:16px 0;padding:16px;border:1px solid rgba(255,255,255,.14);border-radius:16px;background:rgba(255,255,255,.05)">
+            <h3 style="margin:0 0 8px">WI-FI OTA</h3>
+            <p style="margin:0 0 10px">1. На часах выбери <b>WIFI UPDATE</b>.<br>2. Подключи телефон к сети <b>NeuroWatch-XXXX</b>.<br>3. Введи адрес ниже и открой OTA-панель.</p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <input id="otaHost" value="192.168.4.1" inputmode="url" style="flex:1;min-width:180px;padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,.2);background:rgba(0,0,0,.2);color:inherit">
+              <button id="wifiOtaBtn" type="button" style="padding:10px 14px;border-radius:10px">ОТКРЫТЬ WI-FI OTA</button>
+            </div>
+            <small style="display:block;margin-top:8px;opacity:.72">USB/CH9102 остаётся доступен ниже.</small>
+          </section>
+          '''
+          if "id=\"wifiOtaCard\"" not in h:
+              if marker not in h:
+                  raise SystemExit("picker marker not found")
+              h = h.replace(marker, card + marker, 1)
+          script_marker = "</script>"
+          js = r'''\n<script>\n(() => {\n  const btn = document.getElementById('wifiOtaBtn');\n  const input = document.getElementById('otaHost');\n  if (!btn || !input) return;\n  btn.addEventListener('click', () => {\n    let host = input.value.trim().replace(/^https?:\\/\\//i, '').replace(/\\/+$/, '');\n    if (!host) host = '192.168.4.1';\n    window.location.href = 'http://' + host + '/';\n  });\n})();\n</script>\n'''
+          if "id='wifiOtaBtn'" not in h and 'id="wifiOtaBtn"' in h and "ОТКРЫТЬ WI-FI OTA" in h:
+              h = h.replace(script_marker, js + script_marker, 1)
+          p.write_text(h)
+          PY
 
       - name: Bundle Espressif esptool-js 0.6.1
         shell: bash
@@ -127,6 +158,9 @@ jobs:
           assert "function neuroWatchUsbDiagnostics()" in h
           assert "usbRefreshBtn" in h and "usbPermissionBtn" in h
           assert "setInterval(neuroWatchUsbDiagnostics, 1500)" in h
+          assert 'id="wifiOtaCard"' in h
+          assert 'id="wifiOtaBtn"' in h
+          assert '192.168.4.1' in h
           assert "async function doReadOnlyPreflight()" in h
           assert "preflightBtn" in h
           assert "window.__preflightPassed = false" in h
@@ -194,15 +228,15 @@ jobs:
         run: |
           set -euo pipefail
           gradle --no-daemon :app:assembleDebug \
-            -PappId=ru.neurogazette.neurowatchinstaller \
+            -PappId=ru.neurogazette.neurowatchmanager \
             -PappLabel='NeuroWatch Manager' \
-            -PversionName=2.1 \
-            -PversionCode=21
+            -PversionName=1.5 \
+            -PversionCode=15
           mkdir -p ../release-installer
-          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Manager-v2.1.apk
-          (cd ../release-installer && sha256sum NeuroWatch-Manager-v2.1.apk > SHA256SUMS.txt)
+          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Manager-v1.5.apk
+          (cd ../release-installer && sha256sum NeuroWatch-Manager-v1.5.apk > SHA256SUMS.txt)
           printf '%s\n' \
-            'NeuroWatch Manager v2.1 for the detected ESP32-PICO-D4 / 4MB + CH9102 platform.' \
+            'NeuroWatch Manager v1.5 for ESP32-PICO-D4 / 4MB + CH9102, with USB recovery and Wi-Fi OTA entry.' \
             'USB detection is diagnostic-first: raw Android enumeration is visible, USB permission is explicit, CH9102 has a CDC fallback driver, and stale USB handles are always closed before reconnect.' \
             'Bootloader entry is adaptive: the app tries the previously proven CDC sequence, Espressif ClassicReset/TightReset patterns, and the native WCH CH9102 0xA4 DTR/RTS control path.' \
             'The app separates raw USB diagnostics from flashing: installation stays disabled until the exact watch, permission, and serial driver are all ready.' \
@@ -214,6 +248,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NeuroWatch-Manager-Android-v2.1
+          name: NeuroWatch-Manager-Android-v1.5
           path: release-installer/
           if-no-files-found: error
