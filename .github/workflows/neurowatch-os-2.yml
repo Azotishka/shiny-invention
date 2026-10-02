@@ -3,7 +3,7 @@ name: NeuroWatch OS 0.10 Wi-Fi OTA Build
 on:
   push:
     branches:
-      - neurowatch-os-2-ui
+      - neurowatch-wifi-ota
     paths:
       - 'firmware/**'
       - 'tests/test_neurowatch_layout.py'
@@ -55,7 +55,7 @@ jobs:
           test -s build/NeuroWatch_OS.ino.bin
           mkdir -p release
           cp build/NeuroWatch_OS.ino.bin release/NeuroWatch-OS-v0.10-wifi-ota.bin
-          sha256sum release/NeuroWatch-OS-v0.9-ui.bin > release/SHA256SUMS.txt
+          sha256sum release/NeuroWatch-OS-v0.10-wifi-ota.bin > release/SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
