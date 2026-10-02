@@ -1,4 +1,4 @@
-"""Static safety/UX invariants for NeuroWatch OS v0.8."""
+"""Static safety/UX invariants for NeuroWatch OS v0.9."""
 from pathlib import Path
 import unittest
 
@@ -24,8 +24,9 @@ class FirmwareSafetyContract(unittest.TestCase):
         self.assertIn("btStop();", SOURCE)
 
     def test_single_standard_face(self):
-        self.assertIn("drawStandardWallpaper()", SOURCE)
-        self.assertIn("FACE: STANDARD DAILY", SOURCE)
+        self.assertIn("static constexpr LayoutRect NW_FACE_HEADER", SOURCE)
+        self.assertIn("static constexpr LayoutRect NW_FACE_CONTROLS", SOURCE)
+        self.assertIn("label(9,9,\"NEUROWATCH\")", SOURCE)
         self.assertNotIn("retainedFace", SOURCE)
 
     def test_menu_partial_refresh_is_bounded(self):
@@ -41,8 +42,8 @@ class FirmwareSafetyContract(unittest.TestCase):
     def test_vector_clock_uses_no_large_bitmap_font(self):
         self.assertNotIn("FreeMonoBold18pt7b.h", SOURCE)
         self.assertIn("void digit(int x, int y, uint8_t value)", SOURCE)
-        self.assertIn("digit(20, 37, shownHour / 10)", SOURCE)
-        self.assertIn("digit(141, 37, currentTime.Minute % 10)", SOURCE)
+        self.assertIn("digit(18,34,shownHour/10)", SOURCE)
+        self.assertIn("digit(139,34,currentTime.Minute%10)", SOURCE)
 
     def test_time_and_date_are_separate_easy_editors(self):
         self.assertIn("void editTime(bool alarm = false)", SOURCE)
@@ -51,7 +52,7 @@ class FirmwareSafetyContract(unittest.TestCase):
         self.assertIn("daysInMonth", SOURCE)
         self.assertIn("leapYear", SOURCE)
         self.assertIn("SET CLOCK TIME", SOURCE)
-        self.assertIn("HOLD=FAST", SOURCE)
+        self.assertIn("HOLD FAST", SOURCE)
         self.assertIn("NW_EDITOR_TIMEOUT_MS 60000UL", CONFIG)
 
     def test_settings_are_persistent_but_cached_in_rtc_memory(self):
