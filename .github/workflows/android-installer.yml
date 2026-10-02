@@ -81,7 +81,7 @@ jobs:
           cat > android-installer/app/src/main/assets/firmware.json <<'JSON'
           {
             "name": "NeuroWatch OS",
-            "version": "v2.0.1 CH9102 Read Fix",
+            "version": "v2.0.3 Install Fix + CH9102 Read Fix",
             "parts": [
               { "file": "app.bin", "offset": "0x0" }
             ]
@@ -185,14 +185,14 @@ jobs:
         working-directory: android-installer
         run: |
           set -euo pipefail
-          gradle --no-daemon :app:assembleDebug             -PappId=ru.neurogazette.neurowatchinstaller             -PappLabel='NeuroWatch Manager'             -PversionName=2.0.1             -PversionCode=201
+          gradle --no-daemon :app:assembleDebug             -PappId=ru.neurogazette.neurowatchmanager203             -PappLabel='NeuroWatch Manager'             -PversionName=2.0.3             -PversionCode=203
           mkdir -p ../release-installer
-          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Manager-v2.0.1.apk
+          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Manager-v2.0.3.apk
           (cd ../release-installer && sha256sum NeuroWatch-Manager-v2.0.1.apk > SHA256SUMS.txt)
-          printf '%s\n'             'NeuroWatch Manager v2.0.1 for ESP32-PICO-D4 / 4MB + CH9102. Read-only preflight uses ROM reads with a direct SPI-read fallback to avoid CH9102/Android payload-stream instability.'             'USB detection is diagnostic-first: raw Android enumeration is visible, USB permission is explicit, CH9102 has a CDC fallback driver, and stale USB handles are always closed before reconnect.'             'The app separates raw USB diagnostics from flashing: installation stays disabled until the exact watch, permission, and serial driver are all ready.'             'A read-only hardware preflight must successfully identify the ESP32 and validate the factory partition/OTA layout before the Install button can be enabled.'             'It validates security eFuses, backs up partition table + OTA metadata, writes only an inactive OTA app slot, verifies it by MD5, then switches OTA metadata.'             'It does NOT package or overwrite the bootloader or partition table, and destructive full-flash erase is disabled in the UI.'             'If preflight, read, write, or MD5 verification fails before OTA switch, the existing active system remains selected.'             > ../release-installer/READ_FIRST.txt
+          printf '%s\n'             'NeuroWatch Manager v2.0.3 for ESP32-PICO-D4 / 4MB + CH9102. Read-only preflight uses ROM reads with a direct SPI-read fallback to avoid CH9102/Android payload-stream instability.'             'USB detection is diagnostic-first: raw Android enumeration is visible, USB permission is explicit, CH9102 has a CDC fallback driver, and stale USB handles are always closed before reconnect.'             'The app separates raw USB diagnostics from flashing: installation stays disabled until the exact watch, permission, and serial driver are all ready.'             'A read-only hardware preflight must successfully identify the ESP32 and validate the factory partition/OTA layout before the Install button can be enabled.'             'It validates security eFuses, backs up partition table + OTA metadata, writes only an inactive OTA app slot, verifies it by MD5, then switches OTA metadata.'             'It does NOT package or overwrite the bootloader or partition table, and destructive full-flash erase is disabled in the UI.'             'If preflight, read, write, or MD5 verification fails before OTA switch, the existing active system remains selected.'             > ../release-installer/READ_FIRST.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NeuroWatch-Manager-Android-v2.0.1
+          name: NeuroWatch-Manager-Android-v2.0.3
           path: release-installer/
           if-no-files-found: error
