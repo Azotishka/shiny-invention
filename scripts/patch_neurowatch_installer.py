@@ -990,7 +990,7 @@ async function readFlashViaSpi(loader, address, size, onProgress = null) {
         if (Android.clearInput && attempt > 0) Android.clearInput();
         if (attempt > 0) await new Promise(r => setTimeout(r, 60));
         const v = await loader.runSpiflashCommand(
-          0x03, new Uint8Array(0), n * 8,
+          0x03, new Uint8Array(0), n * 8, // JEDEC READ
           (address + off) >>> 0, 24, 0
         );
         const value = Number(v) >>> 0;
