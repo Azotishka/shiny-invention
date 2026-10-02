@@ -1,0 +1,130 @@
+name: NeuroWatch Android Installer Build 58
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - neurowatch-manager-v201-readfix
+
+permissions:
+  contents: read
+
+jobs:
+  build-installer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python tools
+        run: python -m pip install --disable-pip-version-check pyserial
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Install ESP32 core and libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          INDEX=https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index --additional-urls "$INDEX"
+          arduino-cli core install esp32:esp32@2.0.15 --additional-urls "$INDEX"
+          arduino-cli lib install 'Watchy@1.4.7'
+          arduino-cli lib install 'DS3232RTC@2.0.1'
+          arduino-cli lib install 'WiFiManager@2.0.17'
+      - name: Build firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build installer-assets
+          arduino-cli compile --fqbn 'esp32:esp32:watchy:Revision=v20,PartitionScheme=min_spiffs' --build-path "$PWD/build" firmware/NeuroWatch_OS
+          python3 scripts/check_ota.py build/NeuroWatch_OS.ino.bin
+          cp build/NeuroWatch_OS.ino.bin installer-assets/app.bin
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Prepare installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/drakosha/esp-flash-android.git android-installer
+          cd android-installer
+          git checkout c4036ace9d2f5526e3535d1ac8bfb8ac3bafc23d
+          cd ..
+          python3 scripts/patch_neurowatch_installer.py android-installer
+          cp installer-assets/app.bin android-installer/app/src/main/assets/
+          cat > android-installer/app/src/main/assets/firmware.json <<'JSON'
+          {
+            "name": "NeuroWatch OS",
+            "version": "v2.0.2 Read Fix",
+            "parts": [
+              { "file": "app.bin", "offset": "0x0" }
+            ]
+          }
+          JSON
+      - name: Bundle esptool-js 0.6.1
+        working-directory: android-installer
+        env:
+          ESPTOOL_VERSION: '0.6.1'
+        run: ./scripts/bundle-esptool.sh
+      - name: Verify installer
+        working-directory: android-installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          h=Path("app/src/main/assets/flash.html").read_text()
+          required=[
+            "async function doFlash() {",
+            "async function openChipRom()",
+            "async function readFlashSlowRom(loader, address, size",
+            "async function readFlashViaSpi(loader, address, size",
+            "async function readFlashRomTiny(loader, address, size",
+            "runSpiflashCommand",
+            "JEDEC READ",
+            "flashMd5sum(choice.target.offset, app.length)",
+            "async function doReadOnlyPreflight()",
+            "window.__preflightPassed = false",
+            "ПРОВЕРИТЬ ЧАСЫ БЕЗ ЗАПИСИ",
+          ]
+          for x in required: assert x in h, x
+          assert "await session.loader.runStub()" not in h
+          assert "session.loader = await session.loader.runStub()" not in h
+          assert "async function makeFactoryBackup(session)" not in h
+          assert "addEventListener('click', doErase)" not in h
+          assert ".flashSpiAttach(0)" not in h[h.index("async function connectRomWithSignalSequence"):h.index("// ─── Прошивка")]
+          s=h[h.index("<script>")+8:h.rindex("</script>")]
+          Path("/tmp/flash.js").write_text(s)
+          hs=h.index("function u16le"); he=h.index("// ─── Прошивка",hs)
+          Path("/tmp/ota.js").write_text(h[hs:he])
+          PY
+          node --check /tmp/flash.js
+          printf 'global.window = {};
+' >/tmp/test.js
+          cat /tmp/ota.js ../scripts/test_installer_ota.js >>/tmp/test.js
+          node /tmp/test.js
+          test -f app/src/main/assets/app.bin
+          test ! -f app/src/main/assets/bootloader.bin
+          test ! -f app/src/main/assets/partitions.bin
+          test ! -f app/src/main/assets/boot_app0.bin
+      - name: Build installer APK
+        working-directory: android-installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon :app:assembleDebug -PappId=ru.neurogazette.neurowatchinstaller -PappLabel='NeuroWatch Manager' -PversionName=2.0.2 -PversionCode=202
+          mkdir -p ../release-installer
+          cp app/build/outputs/apk/debug/app-debug.apk ../release-installer/NeuroWatch-Manager-v2.0.2.apk
+          (cd ../release-installer && sha256sum NeuroWatch-Manager-v2.0.2.apk > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeuroWatch-Manager-v2.0.2
+          path: release-installer/
+          if-no-files-found: error
