@@ -1218,11 +1218,8 @@ async function doReadOnlyPreflight() {
     // executes from IRAM/DRAM and does not modify SPI flash.
     setProgress('Запускаем RAM flasher для стабильного чтения…', 12);
     log('RAM flasher: запуск в памяти, Flash не изменяется.', 'info');
-    session.loader = await session.loader.runStub();
-    log('RAM flasher запущен. Переходим на стандартное чтение Flash.', 'ok');
-
-    setProgress('Читаем заводскую таблицу разделов…', 20);
-    const table = await session.loader.readFlash(0x8000, 0x1000, (packet, done, total) => {
+    setProgress('Читаем заводскую таблицу через ROM…', 20);
+    const table = await readFlashSlowRom(session.loader, 0x8000, 0x1000, (done, total) => {
       if (done === total) setProgress('Таблица разделов прочитана', 25);
     });
     const parts = parsePartitionTable(table);
@@ -1238,7 +1235,7 @@ async function doReadOnlyPreflight() {
     }
 
     setProgress('Проверяем OTA-слоты…', 50);
-    const otadata = await session.loader.readFlash(otadataPart.offset, 0x2000, (packet, done, total) => {
+    const otadata = await readFlashSlowRom(session.loader, otadataPart.offset, 0x2000, (done, total) => {
       if (done === total) setProgress('OTA metadata прочитана', 50);
     });
     const choice = pickSafeOtaTarget(parts, otadata);
@@ -1317,11 +1314,7 @@ safe_do_flash = r'''async function doFlash() {
       );
     }
 
-    log('Запускаем RAM flasher для чтения без изменения Flash…', 'info');
-    session.loader = await session.loader.runStub();
-    log('RAM flasher запущен.', 'ok');
-
-    const table = await session.loader.readFlash(0x8000, 0x1000, (packet, done, total) => {
+    const table = await readFlashSlowRom(session.loader, 0x8000, 0x1000, (done, total) => {
       setProgress('Таблица разделов: ' + Math.round(done*100/total) + '%', 3 + Math.round(done/total*7));
     });
     const partsInfo = parsePartitionTable(table);
@@ -1341,7 +1334,7 @@ safe_do_flash = r'''async function doFlash() {
       throw new Error('Совместимый NVS-раздел не найден. NeuroWatch OS не будет записана.');
     }
 
-    const otadata = await session.loader.readFlash(otadataPart.offset, 0x2000, (packet, done, total) => {
+    const otadata = await readFlashSlowRom(session.loader, otadataPart.offset, 0x2000, (done, total) => {
       setProgress('OTA metadata: ' + Math.round(done*100/total) + '%', 10 + Math.round(done/total*10));
     });
 
