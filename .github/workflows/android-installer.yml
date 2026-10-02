@@ -105,14 +105,14 @@ jobs:
           h = Path("app/src/main/assets/flash.html").read_text()
           assert h.count("async function doFlash() {") == 1
           assert "async function openChipRom()" in h
-          assert "ROM read flash block" in h
+          assert "ROM read flash tiny" in h
           assert "await session.loader.runStub()" not in h
           assert "session.loader = await session.loader.runStub()" not in h
           assert "async function readFlashSlowRom(loader, address, size" in h
           assert "async function readFlashViaSpi(loader, address, size" in h
           assert "runSpiflashCommand" in h
           assert "JEDEC READ" in h
-          assert "ROM read flash block" in h
+          assert "ROM read flash tiny" in h
           assert "flashMd5sum(choice.target.offset, app.length)" in h
           assert "Bootloader, таблица разделов и текущая заводская прошивка НЕ будут перезаписаны." in h
           assert "async function makeFactoryBackup(session)" not in h
