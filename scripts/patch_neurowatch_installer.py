@@ -985,12 +985,12 @@ async function readFlashViaSpi(loader, address, size, onProgress = null) {
   for (let off = 0; off < size; off += WORD) {
     const n = Math.min(WORD, size - off);
     let lastError = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         if (Android.clearInput && attempt > 0) Android.clearInput();
-        if (attempt > 0) await new Promise(r => setTimeout(r, 60));
+        if (attempt > 0) await new Promise(r => setTimeout(r, 80));
         const v = await loader.runSpiflashCommand(
-          0x03, new Uint8Array(0), n * 8, // JEDEC READ
+          0x03, new Uint8Array(0), n * 8, // JEDEC READ, 24-bit address
           (address + off) >>> 0, 24, 0
         );
         const value = Number(v) >>> 0;
@@ -1007,29 +1007,54 @@ async function readFlashViaSpi(loader, address, size, onProgress = null) {
   return out;
 }
 
-async function readFlashSlowRom(loader, address, size, onProgress = null) {
-  // SPI register reads are the primary path. Do NOT send ROM 0x0E first:
-  // a timed-out READ_FLASH_SLOW response can desynchronize the same ROM session.
-  try {
-    return await readFlashViaSpi(loader, address, size, onProgress);
-  } catch (e) {
-    log('Прямое SPI-чтение не удалось: ' + e.message + ' — пробую ROM READ_FLASH_SLOW.', 'info');
+async function readFlashRomTiny(loader, address, size, onProgress = null) {
+  // CH9102/Android can lose large ROM READ_FLASH_SLOW payloads. Use 4-byte
+  // responses so every serial transaction is tiny and independently framed.
+  const out = new Uint8Array(size);
+  const WORD = 4;
+  for (let off = 0; off < size; off += WORD) {
+    const n = Math.min(WORD, size - off);
     if (Android.clearInput) Android.clearInput();
-    await new Promise(r => setTimeout(r, 80));
-    const out = new Uint8Array(size);
-    const BLOCK = 64;
-    for (let off = 0; off < size; off += BLOCK) {
-      const n = Math.min(BLOCK, size - off);
-      const pkt = loader._appendArray(
-        loader._intToByteArray((address + off) >>> 0),
-        loader._intToByteArray(n)
-      );
-      const r = await loader.checkCommand('ROM read flash block', 0x0E, pkt, 0, 64, 5000);
-      if (!r || r.length < n) throw new Error('ROM flash read short block');
-      out.set(r.slice(0, n), off);
-      if (onProgress && ((off + n) % 1024 === 0 || off + n === size)) onProgress(off + n, size);
+    const pkt = loader._appendArray(
+      loader._intToByteArray((address + off) >>> 0),
+      loader._intToByteArray(n)
+    );
+    const r = await loader.checkCommand(
+      'ROM read flash tiny',
+      0x0E,
+      pkt,
+      0,
+      n,
+      5000
+    );
+    if (!r || r.length < n) {
+      throw new Error('ROM tiny flash read short block @0x' + (address + off).toString(16));
+    }
+    out.set(r.slice(0, n), off);
+    if (onProgress && ((off + n) % 1024 === 0 || off + n === size)) onProgress(off + n, size);
+  }
+  return out;
+}
+
+async function readFlashSlowRom(loader, address, size, onProgress = null) {
+  // Primary path: direct SPI register reads. Validate the partition-table
+  // signature; if the SPI controller returns stale/0xFF data, retry using
+  // tiny ROM READ_FLASH_SLOW transactions instead of accepting bad bytes.
+  try {
+    const out = await readFlashViaSpi(loader, address, size, onProgress);
+    if (address === 0x8000 && size >= 2) {
+      const sig = out[0].toString(16).padStart(2, '0') + out[1].toString(16).padStart(2, '0');
+      log('Flash[0x8000..]: ' + Array.from(out.slice(0, 32)).map(x => x.toString(16).padStart(2, '0')).join(' '), 'info');
+      if (out[0] !== 0x50 || out[1] !== 0xAA) {
+        throw new Error('SPI read returned invalid partition signature 0x' + sig);
+      }
     }
     return out;
+  } catch (e) {
+    log('SPI-чтение Flash не прошло проверку: ' + e.message + ' — пробую ROM по 4 байта.', 'info');
+    if (Android.clearInput) Android.clearInput();
+    await new Promise(r => setTimeout(r, 120));
+    return await readFlashRomTiny(loader, address, size, onProgress);
   }
 }
 
