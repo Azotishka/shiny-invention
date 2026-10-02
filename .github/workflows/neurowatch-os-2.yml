@@ -24,6 +24,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install Python build dependency
+        run: python -m pip install --disable-pip-version-check pyserial
+
       - name: Verify UI layout contract
         run: python tests/test_neurowatch_layout.py
 
